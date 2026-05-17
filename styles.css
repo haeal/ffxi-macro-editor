@@ -40,6 +40,31 @@ textarea {
   padding: 16px;
 }
 
+.beta-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  border: 1px solid rgba(214, 180, 107, 0.4);
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(214, 180, 107, 0.16), rgba(240, 122, 99, 0.12));
+  color: var(--ink);
+  box-shadow: var(--shadow);
+}
+
+.beta-banner strong {
+  color: var(--gold);
+  font-size: 0.78rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.beta-banner span {
+  color: var(--muted);
+  line-height: 1.35;
+}
+
 .hero {
   display: flex;
   align-items: center;
@@ -70,6 +95,11 @@ textarea {
 
 .page-shell.has-data {
   padding: 12px;
+}
+
+.page-shell.has-data .beta-banner {
+  margin-bottom: 12px;
+  padding: 8px 12px;
 }
 
 .page-shell.has-data .hero {
@@ -434,6 +464,12 @@ button:focus,
 }
 
 @media (max-width: 1024px) {
+  .beta-banner {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
+  }
+
   .workspace,
   .detail-layout,
   .slot-grid {
