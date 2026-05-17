@@ -38,6 +38,55 @@ function formatAutoTranslateDisplay(phrase) {
   return `${AUTO_TRANSLATE_OPEN}${phrase}${AUTO_TRANSLATE_CLOSE}`;
 }
 
+function getAutoTranslateTokenRanges(value) {
+  const ranges = [];
+  const tokenPattern = /《[^》]+》/g;
+
+  for (const match of String(value ?? '').matchAll(tokenPattern)) {
+    ranges.push({
+      start: match.index,
+      end: match.index + match[0].length
+    });
+  }
+
+  return ranges;
+}
+
+function rangesIntersect(leftStart, leftEnd, rightStart, rightEnd) {
+  return leftStart < rightEnd && leftEnd > rightStart;
+}
+
+function getProtectedTokenSelection(value, selectionStart, selectionEnd, mode = 'replace') {
+  const normalizedValue = String(value ?? '');
+  const tokens = getAutoTranslateTokenRanges(normalizedValue);
+
+  if (tokens.length === 0) {
+    return null;
+  }
+
+  if (selectionStart === selectionEnd) {
+    if (mode === 'backward-delete') {
+      return tokens.find((token) => (selectionStart > token.start && selectionStart < token.end) || selectionStart === token.end) ?? null;
+    }
+
+    if (mode === 'forward-delete') {
+      return tokens.find((token) => (selectionStart > token.start && selectionStart < token.end) || selectionStart === token.start) ?? null;
+    }
+
+    return tokens.find((token) => selectionStart > token.start && selectionStart < token.end) ?? null;
+  }
+
+  const overlappingTokens = tokens.filter((token) => rangesIntersect(selectionStart, selectionEnd, token.start, token.end));
+  if (overlappingTokens.length === 0) {
+    return null;
+  }
+
+  return {
+    start: Math.min(selectionStart, ...overlappingTokens.map((token) => token.start)),
+    end: Math.max(selectionEnd, ...overlappingTokens.map((token) => token.end))
+  };
+}
+
 function isInsideQuotes(value, index) {
   const precedingText = String(value ?? '').slice(0, Math.max(0, index));
   return (precedingText.match(/"/g) ?? []).length % 2 === 1;
@@ -264,6 +313,10 @@ function focusLineTextarea(lineIndex, caretPosition) {
 
   textarea.focus();
   textarea.setSelectionRange(caretPosition, caretPosition);
+}
+
+function selectProtectedToken(textarea, protectedSelection) {
+  textarea.setSelectionRange(protectedSelection.start, protectedSelection.end);
 }
 
 function closeAutoTranslatePicker() {
@@ -773,10 +826,48 @@ function renderEditor() {
     textarea.value = line;
     textarea.placeholder = '/ja "Ability" <t>';
     textarea.addEventListener('keydown', (event) => {
+      const selectionStart = event.currentTarget.selectionStart ?? 0;
+      const selectionEnd = event.currentTarget.selectionEnd ?? selectionStart;
+
       if (event.ctrlKey && !event.shiftKey && !event.altKey && (event.code === 'Space' || event.key === ' ')) {
         event.preventDefault();
         openAutoTranslatePicker(index, event.currentTarget);
+        return;
       }
+
+      if (event.key === 'Backspace') {
+        const protectedSelection = getProtectedTokenSelection(event.currentTarget.value, selectionStart, selectionEnd, 'backward-delete');
+        if (protectedSelection) {
+          selectProtectedToken(event.currentTarget, protectedSelection);
+        }
+        return;
+      }
+
+      if (event.key === 'Delete') {
+        const protectedSelection = getProtectedTokenSelection(event.currentTarget.value, selectionStart, selectionEnd, 'forward-delete');
+        if (protectedSelection) {
+          selectProtectedToken(event.currentTarget, protectedSelection);
+        }
+        return;
+      }
+
+      if (!event.ctrlKey && !event.metaKey && !event.altKey && event.key.length === 1) {
+        const protectedSelection = getProtectedTokenSelection(event.currentTarget.value, selectionStart, selectionEnd, 'replace');
+        if (protectedSelection) {
+          selectProtectedToken(event.currentTarget, protectedSelection);
+        }
+      }
+    });
+    textarea.addEventListener('paste', (event) => {
+      const selectionStart = event.currentTarget.selectionStart ?? 0;
+      const selectionEnd = event.currentTarget.selectionEnd ?? selectionStart;
+      const protectedSelection = getProtectedTokenSelection(event.currentTarget.value, selectionStart, selectionEnd, 'replace');
+
+      if (!protectedSelection) {
+        return;
+      }
+
+      selectProtectedToken(event.currentTarget, protectedSelection);
     });
     textarea.addEventListener('input', (event) => {
       const sanitizedValue = sanitizeMacroLineInput(event.currentTarget.value);
