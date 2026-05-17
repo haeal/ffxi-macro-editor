@@ -88,6 +88,22 @@ test('parseMacroDataFile removes embedded newlines from imported macro lines', (
   assert.match(parsed.validationIssues[0], /contained embedded newlines/i);
 });
 
+test('parseMacroDataFile renders known auto-translate tokens in macro lines', () => {
+  const bytes = new Uint8Array(7624);
+  const encoder = new TextEncoder();
+  const prefix = encoder.encode('/recast "');
+  const suffix = encoder.encode('"');
+  const aggressorToken = new Uint8Array([0xfd, 0x02, 0x02, 0x1f, 0x02, 0xfd]);
+
+  bytes.set(prefix, 24 + 4);
+  bytes.set(aggressorToken, 24 + 4 + prefix.length);
+  bytes.set(suffix, 24 + 4 + prefix.length + aggressorToken.length);
+
+  const parsed = parseMacroDataFile('mcr.dat', bytes.buffer);
+
+  assert.equal(parsed.slots[0].lines[0], '/recast "Aggressor"');
+});
+
 test('serializeMacroFile round-trips an untouched parsed macro file exactly', () => {
   const bytes = new Uint8Array(7624);
   const encoder = new TextEncoder();
@@ -103,6 +119,37 @@ test('serializeMacroFile round-trips an untouched parsed macro file exactly', ()
   const serialized = serializeMacroFile(parsed);
 
   assert.deepEqual(Array.from(serialized), Array.from(bytes));
+});
+
+test('serializeMacroFile preserves untouched auto-translate bytes exactly', () => {
+  const bytes = new Uint8Array(7624);
+  const encoder = new TextEncoder();
+  const prefix = encoder.encode('/ws "');
+  const suffix = encoder.encode('" <t>');
+  const asuranFistsToken = new Uint8Array([0xfd, 0x02, 0x02, 0x21, 0x75, 0xfd]);
+
+  bytes.set(prefix, 24 + 4);
+  bytes.set(asuranFistsToken, 24 + 4 + prefix.length);
+  bytes.set(suffix, 24 + 4 + prefix.length + asuranFistsToken.length);
+
+  const parsed = parseMacroDataFile('mcr.dat', bytes.buffer);
+  const serialized = serializeMacroFile(parsed);
+
+  assert.equal(parsed.slots[0].lines[0], '/ws "Asuran Fists" <t>');
+  assert.deepEqual(Array.from(serialized), Array.from(bytes));
+});
+
+test('serializeMacroFile encodes edited auto-translate phrases back into macro bytes', () => {
+  const parsed = parseMacroDataFile('mcr.dat', new Uint8Array(7624).buffer);
+
+  parsed.slots[0].lines[0] = '/recast "Aggressor"';
+
+  const serialized = serializeMacroFile(parsed);
+  const reparsed = parseMacroDataFile('mcr.dat', serialized.buffer);
+
+  assert.equal(serialized[24 + 4 + 9], 0xfd);
+  assert.deepEqual(Array.from(serialized.slice(24 + 4 + 9, 24 + 4 + 15)), [0xfd, 0x02, 0x02, 0x1f, 0x02, 0xfd]);
+  assert.equal(reparsed.slots[0].lines[0], '/recast "Aggressor"');
 });
 
 test('serializeMacroFile strips embedded newlines before export', () => {

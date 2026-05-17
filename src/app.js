@@ -33,7 +33,7 @@ const elements = {
   bundleSearchInput: document.querySelector('#bundle-search-input'),
   bookList: document.querySelector('#book-list'),
   bundleSelector: document.querySelector('#bundle-selector'),
-  macroFileSelector: document.querySelector('#macro-file-selector'),
+  pageSelectorLabel: document.querySelector('#page-selector-label'),
   pageSelector: document.querySelector('#page-selector'),
   slotFilter: document.querySelector('#slot-filter'),
   statusPill: document.querySelector('#status-pill'),
@@ -344,32 +344,10 @@ function renderBooks() {
   }));
 }
 
-function renderMacroFiles() {
-  const parsedBook = getCurrentParsedBook();
-  const parsedPages = parsedBook?.pages ?? [];
-
-  elements.macroFileSelector.replaceChildren(...(parsedPages.length > 0
-    ? parsedPages.map((page) => {
-        const option = document.createElement('option');
-        option.value = page.fileName;
-        option.textContent = `${page.label} (${page.fileName})${page.usedSlotCount > 0 ? ` · ${page.usedSlotCount}/20 used` : ''}`;
-        option.selected = page.fileName === state.selectedMacroFileName;
-        return option;
-      })
-    : [(() => {
-        const option = document.createElement('option');
-        option.value = '';
-        option.textContent = 'No parsed macro file';
-        option.selected = true;
-        return option;
-      })()]));
-
-  elements.macroFileSelector.disabled = parsedPages.length === 0;
-}
-
 function renderPages() {
   const parsedBook = getCurrentParsedBook();
   if (parsedBook) {
+    elements.pageSelectorLabel.textContent = 'Macro File';
     elements.pageSelector.replaceChildren(...parsedBook.pages.map((page) => {
       const option = document.createElement('option');
       option.value = page.fileName;
@@ -381,6 +359,7 @@ function renderPages() {
     return;
   }
 
+  elements.pageSelectorLabel.textContent = 'Page';
   const currentBook = getCurrentBook();
   elements.pageSelector.replaceChildren(...currentBook.pages.map((page, index) => {
     const option = document.createElement('option');
@@ -475,9 +454,15 @@ function renderEditor() {
     textarea.value = line;
     textarea.placeholder = '/ja "Ability" <t>';
     textarea.addEventListener('input', (event) => {
-      slot.lines[index] = sanitizeMacroLineInput(event.currentTarget.value);
-      renderEditor();
-      renderSlots();
+      const sanitizedValue = sanitizeMacroLineInput(event.currentTarget.value);
+      slot.lines[index] = sanitizedValue;
+
+      if (event.currentTarget.value !== sanitizedValue) {
+        event.currentTarget.value = sanitizedValue;
+      }
+
+      counter.className = `counter${sanitizedValue.length > MACRO_LINE_LIMIT ? ' over-limit' : ''}`;
+      counter.textContent = `${sanitizedValue.length}/${MACRO_LINE_LIMIT}`;
       refreshEditIndicators();
     });
 
@@ -493,7 +478,6 @@ function render() {
   syncSelectedBundle();
   updateLayoutMode();
   renderBundles();
-  renderMacroFiles();
   renderBooks();
   renderPages();
   renderSlots();
@@ -513,12 +497,6 @@ elements.bundleSelector.addEventListener('change', (event) => {
 
 elements.bundleSearchInput.addEventListener('input', (event) => {
   state.bundleSearchTerm = event.currentTarget.value;
-  state.selectedSlotId = 'ctrl-1';
-  render();
-});
-
-elements.macroFileSelector.addEventListener('change', (event) => {
-  state.selectedMacroFileName = event.currentTarget.value || null;
   state.selectedSlotId = 'ctrl-1';
   render();
 });

@@ -20,11 +20,11 @@
         <section class="upload-card">
           <label class="button primary" for="macro-file-input">Upload Macro Files</label>
           <input id="macro-file-input" type="file" accept=".dat,.mcr,.bin,*/*" multiple>
-          <label class="button secondary" for="macro-folder-input">Upload Macro Backup Folder</label>
+          <label class="button secondary" for="macro-folder-input">Upload User Folder</label>
           <input id="macro-folder-input" type="file" webkitdirectory directory multiple>
           <button class="button secondary" id="download-bundle-button" type="button">Download Bundle Zip</button>
           <button class="button secondary" id="create-blank-button" type="button">Create Blank Workspace</button>
-          <p class="upload-note" id="export-status">Load a macro backup bundle or folder to validate in-memory round-trip and prepare a zip export.</p>
+          <p class="upload-note" id="export-status">Load macro files or a User folder to validate in-memory round-trip and prepare a zip export.</p>
         </section>
       </header>
 
@@ -48,11 +48,7 @@
               <select id="bundle-selector"></select>
             </div>
             <div>
-              <label for="macro-file-selector">Macro File</label>
-              <select id="macro-file-selector"></select>
-            </div>
-            <div>
-              <label for="page-selector">Page</label>
+              <label id="page-selector-label" for="page-selector">Page</label>
               <select id="page-selector"></select>
             </div>
             <div>

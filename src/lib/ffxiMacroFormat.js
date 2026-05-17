@@ -1,3 +1,5 @@
+import { AUTO_TRANSLATE_PHRASES } from './ffxiAutoTranslateData.js';
+
 export const BOOK_COUNT = 20;
 export const PAGE_COUNT = 10;
 export const MACROS_PER_PAGE = 20;
@@ -10,8 +12,10 @@ const MACRO_RECORD_PREFIX_BYTES = 4;
 const MACRO_LINE_BYTES = 61;
 const MACRO_NAME_BYTES = 10;
 const TITLE_BYTES = 16;
+const AUTO_TRANSLATE_TOKEN_LENGTH = 6;
 const MACRO_DATA_FILE_LENGTH = FILE_HEADER_LENGTH + (MACROS_PER_PAGE * MACRO_RECORD_LENGTH);
 const TITLE_FILE_LENGTH = FILE_HEADER_LENGTH + (BOOK_COUNT * TITLE_BYTES);
+const AUTO_TRANSLATE_PHRASE_PREFIXES = buildAutoTranslatePhrasePrefixes();
 
 function cloneBytes(source) {
   return new Uint8Array(source).slice();
@@ -74,13 +78,111 @@ function toAsciiBytes(value, maxLength) {
   return bytes;
 }
 
+function hexKeyToBytes(hexKey) {
+  const bytes = new Uint8Array(Math.floor(hexKey.length / 2));
+
+  for (let index = 0; index < bytes.length; index += 1) {
+    bytes[index] = Number.parseInt(hexKey.slice(index * 2, (index * 2) + 2), 16);
+  }
+
+  return bytes;
+}
+
+function buildAutoTranslatePhrasePrefixes() {
+  const prefixes = new Map();
+
+  for (const [hexKey, phrase] of AUTO_TRANSLATE_PHRASES) {
+    if (!phrase || phrase.trim().length < 3 || prefixes.has(phrase)) {
+      continue;
+    }
+
+    const prefix = phrase[0];
+    const bucket = prefixes.get(prefix) ?? [];
+    bucket.push({ phrase, bytes: hexKeyToBytes(hexKey) });
+    prefixes.set(prefix, bucket);
+  }
+
+  for (const bucket of prefixes.values()) {
+    bucket.sort((left, right) => right.phrase.length - left.phrase.length || left.phrase.localeCompare(right.phrase));
+  }
+
+  return prefixes;
+}
+
+function toEncodedMacroBytes(value, maxLength) {
+  const normalized = String(value ?? '');
+  const output = [];
+  let index = 0;
+  let insideQuotes = false;
+
+  while (index < normalized.length && output.length < maxLength) {
+    if (normalized[index] === '"') {
+      output.push(normalized.charCodeAt(index));
+      insideQuotes = !insideQuotes;
+      index += 1;
+      continue;
+    }
+
+    const candidates = insideQuotes ? (AUTO_TRANSLATE_PHRASE_PREFIXES.get(normalized[index]) ?? []) : [];
+    const matchedCandidate = candidates.find(({ phrase, bytes }) => normalized.startsWith(phrase, index) && output.length + bytes.length <= maxLength);
+
+    if (matchedCandidate) {
+      output.push(...matchedCandidate.bytes);
+      index += matchedCandidate.phrase.length;
+      continue;
+    }
+
+    const codePoint = normalized.charCodeAt(index);
+    output.push(codePoint <= 0x7f ? codePoint : 0x3f);
+    index += 1;
+  }
+
+  return new Uint8Array(output);
+}
+
 function sanitizeMacroLineValue(value) {
   return String(value ?? '').replace(/\r\n?|\n/g, ' ');
 }
 
+function toHexKey(bytes) {
+  return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
+}
+
+function decodeAsciiByte(value) {
+  return String.fromCharCode(value <= 0x7f ? value : 0x3f);
+}
+
+function decodeFFXIString(bytes, start, length) {
+  let end = start;
+  const limit = Math.min(start + length, bytes.length);
+
+  while (end < limit && bytes[end] !== 0) {
+    end += 1;
+  }
+
+  const decoded = [];
+
+  for (let index = start; index < end; index += 1) {
+    const isTokenStart = bytes[index] === 0xfd;
+    const tokenEnd = index + AUTO_TRANSLATE_TOKEN_LENGTH - 1;
+
+    if (isTokenStart && tokenEnd < end && bytes[tokenEnd] === 0xfd) {
+      const tokenBytes = bytes.subarray(index, index + AUTO_TRANSLATE_TOKEN_LENGTH);
+      const tokenKey = toHexKey(tokenBytes);
+      decoded.push(AUTO_TRANSLATE_PHRASES.get(tokenKey) ?? `[autotrans:${tokenKey}]`);
+      index += AUTO_TRANSLATE_TOKEN_LENGTH - 1;
+      continue;
+    }
+
+    decoded.push(decodeAsciiByte(bytes[index]));
+  }
+
+  return decoded.join('').trim();
+}
+
 function writeFixedCString(bytes, offset, length, value) {
   bytes.fill(0, offset, offset + length);
-  bytes.set(toAsciiBytes(value, length), offset);
+  bytes.set(toEncodedMacroBytes(value, length), offset);
 }
 
 function summarizeFileBytes(arrayBuffer) {
@@ -262,14 +364,7 @@ function parseTitleBankIndex(fileName) {
 }
 
 function parseCString(bytes, start, length) {
-  let end = start;
-  const limit = Math.min(start + length, bytes.length);
-
-  while (end < limit && bytes[end] !== 0) {
-    end += 1;
-  }
-
-  return new TextDecoder('ascii').decode(bytes.subarray(start, end)).trim();
+  return decodeFFXIString(bytes, start, length);
 }
 
 function createParsedSlot(slotIndex, bytes, baseOffset) {
@@ -292,16 +387,17 @@ function createParsedSlot(slotIndex, bytes, baseOffset) {
   }
 
   const nameOffset = contentOffset + (MACRO_LINE_COUNT * MACRO_LINE_BYTES);
+  const parsedName = parseCString(bytes, nameOffset, MACRO_NAME_BYTES);
 
   return {
     id: `${modifier}-${key}`,
     modifier,
     key,
-    name: parseCString(bytes, nameOffset, MACRO_NAME_BYTES),
+    name: parsedName,
     lines,
     originalLines: [...lines],
     rawLines,
-    originalName: parseCString(bytes, nameOffset, MACRO_NAME_BYTES),
+    originalName: parsedName,
     rawName: cloneBytes(bytes.subarray(nameOffset, nameOffset + MACRO_NAME_BYTES)),
     validationIssues
   };
