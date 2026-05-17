@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>FFXI Macro Editor</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <div class="page-shell" id="page-shell">
+      <header class="hero">
+        <div class="hero-title">
+          <p class="eyebrow">Browser Editor</p>
+          <h1>FFXI Macro Editor</h1>
+        </div>
+        <section class="upload-card">
+          <label class="button primary" for="macro-file-input">Upload Macro Files</label>
+          <input id="macro-file-input" type="file" accept=".dat,.mcr,.bin,*/*" multiple>
+          <label class="button secondary" for="macro-folder-input">Upload Macro Backup Folder</label>
+          <input id="macro-folder-input" type="file" webkitdirectory directory multiple>
+          <button class="button secondary" id="download-bundle-button" type="button">Download Bundle Zip</button>
+          <button class="button secondary" id="create-blank-button" type="button">Create Blank Workspace</button>
+          <p class="upload-note" id="export-status">Load a macro backup bundle or folder to validate in-memory round-trip and prepare a zip export.</p>
+        </section>
+      </header>
+
+      <main class="workspace">
+        <aside class="panel books-panel">
+          <div class="panel-heading">
+            <h2 id="book-panel-title">Books</h2>
+            <span id="book-count-label"></span>
+          </div>
+          <label class="sidebar-search" for="bundle-search-input">
+            <span>Search</span>
+            <input id="bundle-search-input" type="search" placeholder="Find profile, title, or macro text">
+          </label>
+          <div id="book-list" class="book-list"></div>
+        </aside>
+
+        <section class="panel editor-panel">
+          <div class="toolbar">
+            <div>
+              <label for="bundle-selector">Profile</label>
+              <select id="bundle-selector"></select>
+            </div>
+            <div>
+              <label for="macro-file-selector">Macro File</label>
+              <select id="macro-file-selector"></select>
+            </div>
+            <div>
+              <label for="page-selector">Page</label>
+              <select id="page-selector"></select>
+            </div>
+            <div>
+              <label for="slot-filter">View</label>
+              <select id="slot-filter">
+                <option value="all">Ctrl + Alt</option>
+                <option value="ctrl">Ctrl</option>
+                <option value="alt">Alt</option>
+              </select>
+            </div>
+            <div class="toolbar-status" id="status-pill"></div>
+          </div>
+
+          <section class="slot-grid-section">
+            <div class="slot-grid-header">
+              <h2>Macro Palette</h2>
+              <p id="current-location-label"></p>
+            </div>
+            <div id="slot-grid" class="slot-grid"></div>
+          </section>
+
+          <section class="detail-layout">
+            <article class="macro-editor-card">
+              <div class="macro-card-header">
+                <div>
+                  <p class="card-kicker">Selected Macro</p>
+                  <h2 id="selected-slot-title">No slot selected</h2>
+                </div>
+                <div class="macro-chip" id="selected-slot-modifier"></div>
+              </div>
+
+              <label class="field-group">
+                <span>Name</span>
+                <input id="macro-name-input" type="text" maxlength="32" placeholder="Macro name">
+              </label>
+
+              <div id="macro-lines" class="macro-lines"></div>
+            </article>
+
+            <article class="meta-card">
+              <div class="meta-card-section">
+                <p class="card-kicker">Import</p>
+                <h2>File Context</h2>
+                <dl id="file-metadata" class="metadata-list"></dl>
+              </div>
+              <div class="meta-card-section">
+                <p class="card-kicker">Status</p>
+                <p id="format-status"></p>
+              </div>
+              <div class="meta-card-section">
+                <p class="card-kicker">Next Step</p>
+                <p>Use this scaffold to validate layout and state flow while the real binary parser and writer are completed against live macro files.</p>
+              </div>
+            </article>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="./src/app.js"></script>
+  </body>
+</html>
