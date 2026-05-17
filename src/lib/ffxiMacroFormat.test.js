@@ -9,6 +9,7 @@ import {
   createBlankMacroSet,
   exportBundleFiles,
   exportMacroSetFiles,
+  getMacroLineByteLength,
   inspectMacroFile,
   inspectMacroFiles,
   parseMacroDataFile,
@@ -101,7 +102,7 @@ test('parseMacroDataFile renders known auto-translate tokens in macro lines', ()
 
   const parsed = parseMacroDataFile('mcr.dat', bytes.buffer);
 
-  assert.equal(parsed.slots[0].lines[0], '/recast "Aggressor"');
+  assert.equal(parsed.slots[0].lines[0], '/recast "《Aggressor》"');
 });
 
 test('serializeMacroFile round-trips an untouched parsed macro file exactly', () => {
@@ -135,21 +136,26 @@ test('serializeMacroFile preserves untouched auto-translate bytes exactly', () =
   const parsed = parseMacroDataFile('mcr.dat', bytes.buffer);
   const serialized = serializeMacroFile(parsed);
 
-  assert.equal(parsed.slots[0].lines[0], '/ws "Asuran Fists" <t>');
+  assert.equal(parsed.slots[0].lines[0], '/ws "《Asuran Fists》" <t>');
   assert.deepEqual(Array.from(serialized), Array.from(bytes));
 });
 
 test('serializeMacroFile encodes edited auto-translate phrases back into macro bytes', () => {
   const parsed = parseMacroDataFile('mcr.dat', new Uint8Array(7624).buffer);
 
-  parsed.slots[0].lines[0] = '/recast "Aggressor"';
+  parsed.slots[0].lines[0] = '/recast 《Aggressor》';
 
   const serialized = serializeMacroFile(parsed);
   const reparsed = parseMacroDataFile('mcr.dat', serialized.buffer);
 
-  assert.equal(serialized[24 + 4 + 9], 0xfd);
-  assert.deepEqual(Array.from(serialized.slice(24 + 4 + 9, 24 + 4 + 15)), [0xfd, 0x02, 0x02, 0x1f, 0x02, 0xfd]);
-  assert.equal(reparsed.slots[0].lines[0], '/recast "Aggressor"');
+  assert.equal(serialized[24 + 4 + 8], 0xfd);
+  assert.deepEqual(Array.from(serialized.slice(24 + 4 + 8, 24 + 4 + 14)), [0xfd, 0x02, 0x02, 0x1f, 0x02, 0xfd]);
+  assert.equal(reparsed.slots[0].lines[0], '/recast 《Aggressor》');
+});
+
+test('getMacroLineByteLength counts auto-translate markers by encoded token size', () => {
+  assert.equal(getMacroLineByteLength('/p 《Poison Nails》. 《Distortion》 open <call21>'), 31);
+  assert.equal(getMacroLineByteLength('/recast 《Aggressor》'), 14);
 });
 
 test('serializeMacroFile strips embedded newlines before export', () => {

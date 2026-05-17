@@ -442,6 +442,103 @@ button:focus,
   color: var(--danger);
 }
 
+.auto-translate-picker[hidden] {
+  display: none;
+}
+
+.auto-translate-picker {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(3, 8, 13, 0.72);
+  backdrop-filter: blur(6px);
+}
+
+.auto-translate-panel {
+  width: min(720px, 100%);
+  max-height: min(80vh, 760px);
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+  border: 1px solid rgba(95, 122, 148, 0.28);
+  border-radius: 18px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.auto-translate-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.auto-translate-header h3,
+.auto-translate-header p {
+  margin: 0;
+}
+
+.auto-translate-header p,
+.auto-translate-results-info,
+.auto-translate-empty {
+  color: var(--muted);
+}
+
+.auto-translate-close,
+.auto-translate-result {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel-strong);
+  color: var(--ink);
+}
+
+.auto-translate-close {
+  min-height: 38px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.auto-translate-search {
+  width: 100%;
+  min-height: 42px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--field);
+  color: var(--ink);
+}
+
+.auto-translate-results-info,
+.auto-translate-empty {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.auto-translate-results {
+  display: grid;
+  gap: 8px;
+  max-height: min(56vh, 420px);
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.auto-translate-result {
+  width: 100%;
+  padding: 10px 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.auto-translate-result.active,
+.auto-translate-result:hover {
+  color: #071116;
+  background: linear-gradient(135deg, #7bd5e0, #46a9b6);
+  border-color: transparent;
+}
+
 .meta-card {
   display: grid;
   gap: 14px;
@@ -503,5 +600,22 @@ button:focus,
 
   .slot-items {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .auto-translate-picker {
+    padding: 12px;
+  }
+
+  .auto-translate-panel {
+    padding: 14px;
+  }
+
+  .auto-translate-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .auto-translate-close {
+    width: 100%;
   }
 }

@@ -5,12 +5,97 @@ import {
   createBlankMacroSet,
   exportBundleFiles,
   exportMacroSetFiles,
+  getMacroLineByteLength,
   inspectMacroFiles
 } from './lib/ffxiMacroFormat.js';
+import { AUTO_TRANSLATE_PHRASES } from './lib/ffxiAutoTranslateData.js';
 import { zipSync } from 'https://cdn.jsdelivr.net/npm/fflate@0.8.3/esm/browser.js';
+
+const AUTO_TRANSLATE_OPEN = '《';
+const AUTO_TRANSLATE_CLOSE = '》';
+const AUTO_TRANSLATE_RESULT_LIMIT = 60;
+const AUTO_TRANSLATE_CHOICES = Array.from(new Set(AUTO_TRANSLATE_PHRASES.values()))
+  .filter((phrase) => phrase && phrase.trim().length >= 3)
+  .sort((left, right) => left.localeCompare(right));
 
 function sanitizeMacroLineInput(value) {
   return String(value ?? '').replace(/\r\n?|\n/g, ' ');
+}
+
+function getMacroLineCounterText(value) {
+  return `${getMacroLineByteLength(value)}/${MACRO_LINE_LIMIT}`;
+}
+
+function isMacroLineOverLimit(value) {
+  return getMacroLineByteLength(value) > MACRO_LINE_LIMIT;
+}
+
+function normalizeAutoTranslateSearchTerm(value) {
+  return String(value ?? '').replace(/[《》]/g, '').trim();
+}
+
+function formatAutoTranslateDisplay(phrase) {
+  return `${AUTO_TRANSLATE_OPEN}${phrase}${AUTO_TRANSLATE_CLOSE}`;
+}
+
+function isInsideQuotes(value, index) {
+  const precedingText = String(value ?? '').slice(0, Math.max(0, index));
+  return (precedingText.match(/"/g) ?? []).length % 2 === 1;
+}
+
+function getAutoTranslateInsertionContext(value, selectionStart, selectionEnd) {
+  const normalizedValue = String(value ?? '');
+
+  if (selectionEnd > selectionStart) {
+    return {
+      insertionStart: selectionStart,
+      insertionEnd: selectionEnd,
+      searchTerm: normalizeAutoTranslateSearchTerm(normalizedValue.slice(selectionStart, selectionEnd))
+    };
+  }
+
+  const tokenStart = normalizedValue.lastIndexOf(AUTO_TRANSLATE_OPEN, selectionStart);
+  const tokenEnd = normalizedValue.indexOf(AUTO_TRANSLATE_CLOSE, selectionStart);
+
+  if (tokenStart !== -1 && tokenEnd !== -1 && tokenStart < selectionStart && selectionStart <= tokenEnd) {
+    return {
+      insertionStart: tokenStart,
+      insertionEnd: tokenEnd + 1,
+      searchTerm: normalizeAutoTranslateSearchTerm(normalizedValue.slice(tokenStart, tokenEnd + 1))
+    };
+  }
+
+  return {
+    insertionStart: selectionStart,
+    insertionEnd: selectionEnd,
+    searchTerm: ''
+  };
+}
+
+function getAutoTranslateResults(searchTerm) {
+  const normalizedSearchTerm = normalizeAutoTranslateSearchTerm(searchTerm).toLowerCase();
+
+  if (!normalizedSearchTerm) {
+    return AUTO_TRANSLATE_CHOICES.slice(0, AUTO_TRANSLATE_RESULT_LIMIT);
+  }
+
+  const prefixMatches = [];
+  const substringMatches = [];
+
+  for (const phrase of AUTO_TRANSLATE_CHOICES) {
+    const lowercasePhrase = phrase.toLowerCase();
+    if (lowercasePhrase.startsWith(normalizedSearchTerm)) {
+      prefixMatches.push(phrase);
+    } else if (lowercasePhrase.includes(normalizedSearchTerm)) {
+      substringMatches.push(phrase);
+    }
+
+    if (prefixMatches.length >= AUTO_TRANSLATE_RESULT_LIMIT) {
+      break;
+    }
+  }
+
+  return [...prefixMatches, ...substringMatches].slice(0, AUTO_TRANSLATE_RESULT_LIMIT);
 }
 
 const state = {
@@ -23,7 +108,15 @@ const state = {
   selectedPageIndex: 0,
   selectedSlotId: 'ctrl-1',
   slotFilter: 'all',
-  importScope: 'bundle'
+  importScope: 'bundle',
+  autoTranslatePicker: {
+    isOpen: false,
+    lineIndex: null,
+    searchTerm: '',
+    selectedIndex: 0,
+    insertionStart: 0,
+    insertionEnd: 0
+  }
 };
 
 const elements = {
@@ -51,6 +144,231 @@ const elements = {
   exportStatus: document.querySelector('#export-status'),
   createBlankButton: document.querySelector('#create-blank-button')
 };
+
+function createAutoTranslatePicker() {
+  const overlay = document.createElement('div');
+  overlay.className = 'auto-translate-picker';
+  overlay.hidden = true;
+
+  const panel = document.createElement('section');
+  panel.className = 'auto-translate-panel';
+  panel.setAttribute('role', 'dialog');
+  panel.setAttribute('aria-modal', 'true');
+  panel.setAttribute('aria-label', 'Auto-translate phrase search');
+
+  const header = document.createElement('div');
+  header.className = 'auto-translate-header';
+
+  const titleGroup = document.createElement('div');
+  const title = document.createElement('h3');
+  title.textContent = 'Insert Auto-Translate Phrase';
+  const subtitle = document.createElement('p');
+  subtitle.textContent = 'Type to search, then press Enter or click to insert the bracketed token.';
+  titleGroup.append(title, subtitle);
+
+  const closeButton = document.createElement('button');
+  closeButton.type = 'button';
+  closeButton.className = 'auto-translate-close';
+  closeButton.textContent = 'Close';
+
+  header.append(titleGroup, closeButton);
+
+  const searchInput = document.createElement('input');
+  searchInput.type = 'search';
+  searchInput.className = 'auto-translate-search';
+  searchInput.placeholder = 'Search auto-translate phrases';
+  searchInput.autocomplete = 'off';
+  searchInput.spellcheck = false;
+
+  const resultsInfo = document.createElement('p');
+  resultsInfo.className = 'auto-translate-results-info';
+
+  const results = document.createElement('div');
+  results.className = 'auto-translate-results';
+
+  panel.append(header, searchInput, resultsInfo, results);
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+
+  overlay.addEventListener('click', (event) => {
+    if (event.target === overlay) {
+      closeAutoTranslatePicker();
+    }
+  });
+
+  closeButton.addEventListener('click', () => {
+    closeAutoTranslatePicker();
+  });
+
+  searchInput.addEventListener('input', (event) => {
+    state.autoTranslatePicker.searchTerm = event.currentTarget.value;
+    state.autoTranslatePicker.selectedIndex = 0;
+    renderAutoTranslatePicker();
+  });
+
+  searchInput.addEventListener('keydown', (event) => {
+    const resultsList = getAutoTranslateResults(state.autoTranslatePicker.searchTerm);
+
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      state.autoTranslatePicker.selectedIndex = Math.min(state.autoTranslatePicker.selectedIndex + 1, Math.max(resultsList.length - 1, 0));
+      renderAutoTranslatePicker();
+      return;
+    }
+
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      state.autoTranslatePicker.selectedIndex = Math.max(state.autoTranslatePicker.selectedIndex - 1, 0);
+      renderAutoTranslatePicker();
+      return;
+    }
+
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      const phrase = resultsList[state.autoTranslatePicker.selectedIndex];
+      if (phrase) {
+        insertAutoTranslatePhrase(phrase);
+      }
+      return;
+    }
+
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeAutoTranslatePicker();
+    }
+  });
+
+  results.addEventListener('mousedown', (event) => {
+    event.preventDefault();
+  });
+
+  return {
+    autoTranslatePicker: overlay,
+    autoTranslateSearch: searchInput,
+    autoTranslateResultsInfo: resultsInfo,
+    autoTranslateResults: results
+  };
+}
+
+Object.assign(elements, createAutoTranslatePicker());
+
+function getLineTextarea(lineIndex) {
+  return elements.macroLines.querySelector(`textarea[data-line-index="${lineIndex}"]`);
+}
+
+function focusLineTextarea(lineIndex, caretPosition) {
+  const textarea = getLineTextarea(lineIndex);
+  if (!textarea) {
+    return;
+  }
+
+  textarea.focus();
+  textarea.setSelectionRange(caretPosition, caretPosition);
+}
+
+function closeAutoTranslatePicker() {
+  const { lineIndex, insertionStart } = state.autoTranslatePicker;
+  state.autoTranslatePicker = {
+    isOpen: false,
+    lineIndex: null,
+    searchTerm: '',
+    selectedIndex: 0,
+    insertionStart: 0,
+    insertionEnd: 0
+  };
+  renderAutoTranslatePicker();
+
+  if (lineIndex !== null) {
+    requestAnimationFrame(() => focusLineTextarea(lineIndex, insertionStart));
+  }
+}
+
+function renderAutoTranslatePicker() {
+  const pickerState = state.autoTranslatePicker;
+  elements.autoTranslatePicker.hidden = !pickerState.isOpen;
+  if (!pickerState.isOpen) {
+    elements.autoTranslateResults.replaceChildren();
+    elements.autoTranslateResultsInfo.textContent = '';
+    return;
+  }
+
+  const results = getAutoTranslateResults(pickerState.searchTerm);
+  const selectedIndex = Math.min(pickerState.selectedIndex, Math.max(results.length - 1, 0));
+  state.autoTranslatePicker.selectedIndex = selectedIndex;
+  elements.autoTranslateSearch.value = pickerState.searchTerm;
+  elements.autoTranslateResultsInfo.textContent = `${results.length} phrase${results.length === 1 ? '' : 's'} shown`;
+
+  elements.autoTranslateResults.replaceChildren(...(results.length > 0
+    ? results.map((phrase, index) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = `auto-translate-result${index === selectedIndex ? ' active' : ''}`;
+        button.textContent = formatAutoTranslateDisplay(phrase);
+        button.title = phrase;
+        button.addEventListener('mouseenter', () => {
+          state.autoTranslatePicker.selectedIndex = index;
+          renderAutoTranslatePicker();
+        });
+        button.addEventListener('click', () => {
+          insertAutoTranslatePhrase(phrase);
+        });
+        return button;
+      })
+    : [(() => {
+        const emptyState = document.createElement('p');
+        emptyState.className = 'auto-translate-empty';
+        emptyState.textContent = 'No matching auto-translate phrases.';
+        return emptyState;
+      })()]));
+
+  const selectedButton = elements.autoTranslateResults.querySelector('.auto-translate-result.active');
+  selectedButton?.scrollIntoView({ block: 'nearest' });
+}
+
+function openAutoTranslatePicker(lineIndex, textarea) {
+  const context = getAutoTranslateInsertionContext(textarea.value, textarea.selectionStart ?? 0, textarea.selectionEnd ?? textarea.selectionStart ?? 0);
+  state.autoTranslatePicker = {
+    isOpen: true,
+    lineIndex,
+    searchTerm: context.searchTerm,
+    selectedIndex: 0,
+    insertionStart: context.insertionStart,
+    insertionEnd: context.insertionEnd
+  };
+  renderAutoTranslatePicker();
+  requestAnimationFrame(() => {
+    elements.autoTranslateSearch.focus();
+    elements.autoTranslateSearch.select();
+  });
+}
+
+function insertAutoTranslatePhrase(phrase) {
+  const pickerState = state.autoTranslatePicker;
+  if (pickerState.lineIndex === null) {
+    return;
+  }
+
+  const slot = getCurrentSlot();
+  const currentLine = slot.lines[pickerState.lineIndex] ?? '';
+  const token = formatAutoTranslateDisplay(phrase);
+  const nextLine = sanitizeMacroLineInput(`${currentLine.slice(0, pickerState.insertionStart)}${token}${currentLine.slice(pickerState.insertionEnd)}`);
+  const nextCaret = pickerState.insertionStart + token.length;
+
+  slot.lines[pickerState.lineIndex] = nextLine;
+  state.autoTranslatePicker = {
+    isOpen: false,
+    lineIndex: null,
+    searchTerm: '',
+    selectedIndex: 0,
+    insertionStart: 0,
+    insertionEnd: 0
+  };
+  renderAutoTranslatePicker();
+  renderEditor();
+  renderSlots();
+  refreshEditIndicators();
+  requestAnimationFrame(() => focusLineTextarea(pickerState.lineIndex, nextCaret));
+}
 
 function getCurrentExportReport() {
   if (state.importScope === 'macro-set') {
@@ -447,12 +765,19 @@ function renderEditor() {
     label.textContent = `Line ${index + 1}`;
 
     const counter = document.createElement('span');
-    counter.className = `counter${line.length > MACRO_LINE_LIMIT ? ' over-limit' : ''}`;
-    counter.textContent = `${line.length}/${MACRO_LINE_LIMIT}`;
+    counter.className = `counter${isMacroLineOverLimit(line) ? ' over-limit' : ''}`;
+    counter.textContent = getMacroLineCounterText(line);
 
     const textarea = document.createElement('textarea');
+    textarea.dataset.lineIndex = String(index);
     textarea.value = line;
     textarea.placeholder = '/ja "Ability" <t>';
+    textarea.addEventListener('keydown', (event) => {
+      if (event.ctrlKey && !event.shiftKey && !event.altKey && (event.code === 'Space' || event.key === ' ')) {
+        event.preventDefault();
+        openAutoTranslatePicker(index, event.currentTarget);
+      }
+    });
     textarea.addEventListener('input', (event) => {
       const sanitizedValue = sanitizeMacroLineInput(event.currentTarget.value);
       slot.lines[index] = sanitizedValue;
@@ -461,8 +786,8 @@ function renderEditor() {
         event.currentTarget.value = sanitizedValue;
       }
 
-      counter.className = `counter${sanitizedValue.length > MACRO_LINE_LIMIT ? ' over-limit' : ''}`;
-      counter.textContent = `${sanitizedValue.length}/${MACRO_LINE_LIMIT}`;
+      counter.className = `counter${isMacroLineOverLimit(sanitizedValue) ? ' over-limit' : ''}`;
+      counter.textContent = getMacroLineCounterText(sanitizedValue);
       refreshEditIndicators();
     });
 

@@ -15,6 +15,8 @@ const TITLE_BYTES = 16;
 const AUTO_TRANSLATE_TOKEN_LENGTH = 6;
 const MACRO_DATA_FILE_LENGTH = FILE_HEADER_LENGTH + (MACROS_PER_PAGE * MACRO_RECORD_LENGTH);
 const TITLE_FILE_LENGTH = FILE_HEADER_LENGTH + (BOOK_COUNT * TITLE_BYTES);
+const AUTO_TRANSLATE_OPEN = '《';
+const AUTO_TRANSLATE_CLOSE = '》';
 const AUTO_TRANSLATE_PHRASE_PREFIXES = buildAutoTranslatePhrasePrefixes();
 
 function cloneBytes(source) {
@@ -90,16 +92,27 @@ function hexKeyToBytes(hexKey) {
 
 function buildAutoTranslatePhrasePrefixes() {
   const prefixes = new Map();
+  const seenPhrases = new Set();
+
+  const addPhrase = (phrase, bytes) => {
+    if (!phrase || phrase.trim().length < 3 || seenPhrases.has(phrase)) {
+      return;
+    }
+
+    seenPhrases.add(phrase);
+    const prefix = phrase[0];
+    const bucket = prefixes.get(prefix) ?? [];
+    bucket.push({ phrase, bytes });
+    prefixes.set(prefix, bucket);
+  };
 
   for (const [hexKey, phrase] of AUTO_TRANSLATE_PHRASES) {
-    if (!phrase || phrase.trim().length < 3 || prefixes.has(phrase)) {
+    if (!phrase || phrase.trim().length < 3) {
       continue;
     }
 
-    const prefix = phrase[0];
-    const bucket = prefixes.get(prefix) ?? [];
-    bucket.push({ phrase, bytes: hexKeyToBytes(hexKey) });
-    prefixes.set(prefix, bucket);
+    const bytes = hexKeyToBytes(hexKey);
+    addPhrase(`${AUTO_TRANSLATE_OPEN}${phrase}${AUTO_TRANSLATE_CLOSE}`, bytes);
   }
 
   for (const bucket of prefixes.values()) {
@@ -109,21 +122,13 @@ function buildAutoTranslatePhrasePrefixes() {
   return prefixes;
 }
 
-function toEncodedMacroBytes(value, maxLength) {
+function encodeMacroBytes(value, maxLength = Number.POSITIVE_INFINITY) {
   const normalized = String(value ?? '');
   const output = [];
   let index = 0;
-  let insideQuotes = false;
 
   while (index < normalized.length && output.length < maxLength) {
-    if (normalized[index] === '"') {
-      output.push(normalized.charCodeAt(index));
-      insideQuotes = !insideQuotes;
-      index += 1;
-      continue;
-    }
-
-    const candidates = insideQuotes ? (AUTO_TRANSLATE_PHRASE_PREFIXES.get(normalized[index]) ?? []) : [];
+    const candidates = AUTO_TRANSLATE_PHRASE_PREFIXES.get(normalized[index]) ?? [];
     const matchedCandidate = candidates.find(({ phrase, bytes }) => normalized.startsWith(phrase, index) && output.length + bytes.length <= maxLength);
 
     if (matchedCandidate) {
@@ -140,6 +145,10 @@ function toEncodedMacroBytes(value, maxLength) {
   return new Uint8Array(output);
 }
 
+export function getMacroLineByteLength(value) {
+  return encodeMacroBytes(value).byteLength;
+}
+
 function sanitizeMacroLineValue(value) {
   return String(value ?? '').replace(/\r\n?|\n/g, ' ');
 }
@@ -150,6 +159,10 @@ function toHexKey(bytes) {
 
 function decodeAsciiByte(value) {
   return String.fromCharCode(value <= 0x7f ? value : 0x3f);
+}
+
+function formatAutoTranslatePhrase(phrase) {
+  return `${AUTO_TRANSLATE_OPEN}${phrase}${AUTO_TRANSLATE_CLOSE}`;
 }
 
 function decodeFFXIString(bytes, start, length) {
@@ -169,7 +182,8 @@ function decodeFFXIString(bytes, start, length) {
     if (isTokenStart && tokenEnd < end && bytes[tokenEnd] === 0xfd) {
       const tokenBytes = bytes.subarray(index, index + AUTO_TRANSLATE_TOKEN_LENGTH);
       const tokenKey = toHexKey(tokenBytes);
-      decoded.push(AUTO_TRANSLATE_PHRASES.get(tokenKey) ?? `[autotrans:${tokenKey}]`);
+      const phrase = AUTO_TRANSLATE_PHRASES.get(tokenKey);
+      decoded.push(phrase ? formatAutoTranslatePhrase(phrase) : `[autotrans:${tokenKey}]`);
       index += AUTO_TRANSLATE_TOKEN_LENGTH - 1;
       continue;
     }
@@ -182,7 +196,7 @@ function decodeFFXIString(bytes, start, length) {
 
 function writeFixedCString(bytes, offset, length, value) {
   bytes.fill(0, offset, offset + length);
-  bytes.set(toEncodedMacroBytes(value, length), offset);
+  bytes.set(encodeMacroBytes(value, length), offset);
 }
 
 function summarizeFileBytes(arrayBuffer) {
