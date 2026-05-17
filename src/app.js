@@ -7,7 +7,7 @@ import {
   exportMacroSetFiles,
   inspectMacroFiles
 } from './lib/ffxiMacroFormat.js';
-import { zipSync } from '../node_modules/fflate/esm/browser.js';
+import { zipSync } from 'https://cdn.jsdelivr.net/npm/fflate@0.8.3/esm/browser.js';
 
 function sanitizeMacroLineInput(value) {
   return String(value ?? '').replace(/\r\n?|\n/g, ' ');
