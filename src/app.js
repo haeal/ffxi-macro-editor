@@ -22,7 +22,7 @@ const AUTO_TRANSLATE_OPEN = '《';
 const AUTO_TRANSLATE_CLOSE = '》';
 const AUTO_TRANSLATE_RESULT_LIMIT = 60;
 const BLANK_JSON_DRAFT_KEY = '__blank-workspace__';
-const ACE_BASE_URL = 'https://cdn.jsdelivr.net/npm/ace-builds@1.36.2/src-min-noconflict';
+const MONACO_BASE_URL = new URL('../vendor/monaco/vs', import.meta.url).href.replace(/\/$/, '');
 const AUTO_TRANSLATE_CHOICES = Array.from(new Set(AUTO_TRANSLATE_PHRASES.values()))
   .filter((phrase) => phrase && phrase.trim().length >= 3)
   .sort((left, right) => left.localeCompare(right));
@@ -255,48 +255,79 @@ function createJsonEditor() {
     return jsonEditorReadyPromise;
   }
 
-  jsonEditorReadyPromise = Promise.all([
-    loadExternalScript(`${ACE_BASE_URL}/ace.js`),
-    loadExternalScript(`${ACE_BASE_URL}/mode-json.js`),
-    loadExternalScript(`${ACE_BASE_URL}/theme-tomorrow_night_blue.js`),
-    loadExternalScript(`${ACE_BASE_URL}/worker-json.js`)
-  ]).then(() => {
-    const aceEditor = globalThis.ace;
-    aceEditor.config.set('basePath', ACE_BASE_URL);
-    jsonEditorView = aceEditor.edit(elements.jsonEditor);
-    jsonEditorView.session.setMode('ace/mode/json');
-    jsonEditorView.setTheme('ace/theme/tomorrow_night_blue');
-    jsonEditorView.setOptions({
-      showPrintMargin: false,
-      wrap: true,
-      useWorker: true,
-      tabSize: 2,
-      useSoftTabs: true,
-      fontSize: '14px',
-      fontFamily: 'Cascadia Code, Fira Code, Consolas, monospace',
-      behavioursEnabled: true,
-      highlightActiveLine: true,
-      showLineNumbers: true
-    });
-    jsonEditorView.session.setUseWrapMode(true);
-    jsonEditorView.session.on('change', () => {
-      if (isSyncingJsonEditor) {
-        return;
+  jsonEditorReadyPromise = loadExternalScript(`${MONACO_BASE_URL}/loader.js`).then(() => new Promise((resolve, reject) => {
+    const monacoRequire = globalThis.require;
+    if (typeof monacoRequire !== 'function') {
+      reject(new Error('Monaco loader failed to initialize.'));
+      return;
+    }
+
+    globalThis.MonacoEnvironment = {
+      getWorkerUrl() {
+        const workerSource = [
+          `self.MonacoEnvironment = { baseUrl: '${MONACO_BASE_URL}/' };`,
+          `importScripts('${MONACO_BASE_URL}/base/worker/workerMain.js');`
+        ].join('\n');
+
+        return `data:text/javascript;charset=utf-8,${encodeURIComponent(workerSource)}`;
       }
+    };
 
-      handleJsonEditorChange(jsonEditorView.getValue());
-    });
-    jsonEditorView.commands.addCommand({
-      name: 'insertAutoTranslateToken',
-      bindKey: { win: 'Ctrl-Space', mac: 'Ctrl-Space|Command-Space' },
-      exec: () => {
+    monacoRequire.config({ paths: { vs: MONACO_BASE_URL } });
+    monacoRequire(['vs/editor/editor.main', 'vs/language/json/monaco.contribution'], () => {
+      const monaco = globalThis.monaco;
+      monaco.languages.json.jsonDefaults.setDiagnosticsOptions({
+        validate: true,
+        allowComments: false,
+        enableSchemaRequest: false,
+        schemas: []
+      });
+
+      jsonEditorView = monaco.editor.create(elements.jsonEditor, {
+        value: '',
+        language: 'json',
+        theme: 'vs-dark',
+        automaticLayout: true,
+        minimap: { enabled: true },
+        scrollBeyondLastLine: false,
+        wordWrap: 'on',
+        wrappingIndent: 'indent',
+        tabSize: 2,
+        insertSpaces: true,
+        detectIndentation: false,
+        renderWhitespace: 'selection',
+        renderValidationDecorations: 'on',
+        bracketPairColorization: { enabled: true },
+        guides: {
+          bracketPairs: true,
+          indentation: true
+        },
+        folding: true,
+        glyphMargin: true,
+        lineNumbers: 'on',
+        fontSize: 14,
+        fontFamily: 'Cascadia Code, Fira Code, Consolas, monospace',
+        padding: {
+          top: 12,
+          bottom: 12
+        }
+      });
+
+      jsonEditorView.onDidChangeModelContent(() => {
+        if (isSyncingJsonEditor) {
+          return;
+        }
+
+        handleJsonEditorChange(jsonEditorView.getValue());
+      });
+
+      jsonEditorView.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Space, () => {
         openJsonAutoTranslatePicker();
-      },
-      readOnly: false
-    });
+      });
 
-    return jsonEditorView;
-  });
+      resolve(jsonEditorView);
+    }, reject);
+  }));
 
   return jsonEditorReadyPromise;
 }
@@ -304,19 +335,18 @@ function createJsonEditor() {
 function setJsonEditorText(value) {
   createJsonEditor().then(() => {
     const nextValue = String(value ?? '');
-    const currentValue = jsonEditorView.getValue();
+    const model = jsonEditorView.getModel();
+    const currentValue = model?.getValue() ?? '';
 
     if (currentValue === nextValue) {
-      jsonEditorView.resize(true);
-      jsonEditorView.renderer.updateFull();
+      jsonEditorView.layout();
       return;
     }
 
     isSyncingJsonEditor = true;
-    jsonEditorView.setValue(nextValue, -1);
+    model.setValue(nextValue);
     isSyncingJsonEditor = false;
-    jsonEditorView.resize(true);
-    jsonEditorView.renderer.updateFull();
+    jsonEditorView.layout();
   });
 }
 
@@ -325,22 +355,30 @@ function getJsonEditorSelectionOffsets() {
     return null;
   }
 
-  const selectionRange = jsonEditorView.getSelectionRange();
-  const documentRef = jsonEditorView.session.doc;
+  const model = jsonEditorView.getModel();
+  const selectionRange = jsonEditorView.getSelection();
+  if (!model || !selectionRange) {
+    return null;
+  }
 
   return {
-    selectionStart: documentRef.positionToIndex(selectionRange.start, 0),
-    selectionEnd: documentRef.positionToIndex(selectionRange.end, 0)
+    selectionStart: model.getOffsetAt(selectionRange.getStartPosition()),
+    selectionEnd: model.getOffsetAt(selectionRange.getEndPosition())
   };
 }
 
 function focusJsonEditorAtOffset(offset) {
   createJsonEditor().then(() => {
-    const documentRef = jsonEditorView.session.doc;
-    const position = documentRef.indexToPosition(Math.max(0, offset), 0);
+    const model = jsonEditorView.getModel();
+    if (!model) {
+      return;
+    }
+
+    const position = model.getPositionAt(Math.max(0, offset));
+    const monaco = globalThis.monaco;
     jsonEditorView.focus();
-    jsonEditorView.selection.setSelectionRange({ start: position, end: position }, false);
-    jsonEditorView.renderer.scrollCursorIntoView();
+    jsonEditorView.setSelection(new monaco.Selection(position.lineNumber, position.column, position.lineNumber, position.column));
+    jsonEditorView.revealPositionInCenterIfOutsideViewport(position);
   });
 }
 
@@ -474,8 +512,7 @@ function renderDetailTabs() {
 
   if (isJsonTab) {
     createJsonEditor().then(() => {
-      jsonEditorView.resize(true);
-      jsonEditorView.renderer.updateFull();
+      jsonEditorView.layout();
     });
   }
 }
@@ -808,16 +845,31 @@ function insertAutoTranslatePhrase(phrase) {
 
   if (pickerState.target === 'json') {
     createJsonEditor().then(() => {
-      const AceRange = globalThis.ace.require('ace/range').Range;
-      const documentRef = jsonEditorView.session.doc;
-      const startPosition = documentRef.indexToPosition(pickerState.insertionStart, 0);
-      const endPosition = documentRef.indexToPosition(pickerState.insertionEnd, 0);
+      const monaco = globalThis.monaco;
+      const model = jsonEditorView.getModel();
+      if (!model) {
+        return;
+      }
+
+      const startPosition = model.getPositionAt(pickerState.insertionStart);
+      const endPosition = model.getPositionAt(pickerState.insertionEnd);
 
       isSyncingJsonEditor = true;
-      jsonEditorView.session.replace(new AceRange(startPosition.row, startPosition.column, endPosition.row, endPosition.column), token);
+      jsonEditorView.executeEdits('auto-translate-token', [
+        {
+          range: new monaco.Range(
+            startPosition.lineNumber,
+            startPosition.column,
+            endPosition.lineNumber,
+            endPosition.column
+          ),
+          text: token,
+          forceMoveMarkers: true
+        }
+      ]);
       isSyncingJsonEditor = false;
 
-      handleJsonEditorChange(jsonEditorView.getValue());
+      handleJsonEditorChange(model.getValue());
       state.autoTranslatePicker = {
         isOpen: false,
         target: 'macro',

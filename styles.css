@@ -494,7 +494,7 @@ textarea {
 }
 
 .json-editor-shell {
-  min-height: 520px;
+  height: 520px;
   margin-top: 12px;
   border: 1px solid var(--line);
   border-radius: 14px;
@@ -502,34 +502,32 @@ textarea {
   background: rgba(6, 12, 18, 0.96);
 }
 
-.json-editor-shell .ace_editor {
-  height: 520px;
+.json-editor-shell .monaco-editor,
+.json-editor-shell .monaco-editor .margin,
+.json-editor-shell .monaco-editor .monaco-editor-background {
   background: rgba(6, 12, 18, 0.96);
-  color: #eff6fb;
 }
 
-.json-editor-shell .ace_scroller,
-.json-editor-shell .ace_content {
+.json-editor-shell .monaco-editor,
+.json-editor-shell .monaco-editor .view-lines {
   font-family: "Cascadia Code", "Fira Code", Consolas, monospace;
 }
 
-.json-editor-shell .ace_gutter {
+.json-editor-shell .monaco-editor .margin {
   background: rgba(10, 17, 24, 0.98);
-  color: rgba(180, 198, 212, 0.7);
 }
 
-.json-editor-shell .ace_gutter-active-line,
-.json-editor-shell .ace_marker-layer .ace_active-line {
-  background: rgba(65, 93, 116, 0.25) !important;
+.json-editor-shell .monaco-editor .current-line,
+.json-editor-shell .monaco-editor .margin-view-overlays .current-line-margin {
+  background: rgba(65, 93, 116, 0.2);
 }
 
-.json-editor-shell .ace_marker-layer .ace_selection {
-  background: rgba(70, 169, 182, 0.35) !important;
+.json-editor-shell .monaco-editor .selected-text {
+  background: rgba(70, 169, 182, 0.35);
 }
 
-.json-editor-shell .ace_marker-layer .ace_bracket {
-  border: 1px solid rgba(123, 213, 224, 0.55);
-  background: rgba(123, 213, 224, 0.18);
+.json-editor-shell .monaco-editor .minimap {
+  border-left: 1px solid rgba(95, 122, 148, 0.18);
 }
 
 .macro-chip {
