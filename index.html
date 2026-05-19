@@ -62,46 +62,79 @@
             <div class="toolbar-status" id="status-pill"></div>
           </div>
 
-          <section class="slot-grid-section">
-            <div class="slot-grid-header">
-              <h2>Macro Palette</h2>
-              <p id="current-location-label"></p>
-            </div>
-            <div id="slot-grid" class="slot-grid"></div>
-          </section>
-
           <section class="detail-layout">
-            <article class="macro-editor-card">
-              <div class="macro-card-header">
-                <div>
-                  <p class="card-kicker">Selected Macro</p>
-                  <h2 id="selected-slot-title">No slot selected</h2>
+            <article class="detail-workspace-card">
+              <div class="detail-tabs" role="tablist" aria-label="Detail views">
+                <button class="detail-tab active" id="detail-tab-macro" type="button" role="tab" aria-selected="true" aria-controls="detail-panel-macro">Macro Editor</button>
+                <button class="detail-tab" id="detail-tab-json" type="button" role="tab" aria-selected="false" aria-controls="detail-panel-json">JSON View</button>
+                <button class="detail-tab" id="detail-tab-context" type="button" role="tab" aria-selected="false" aria-controls="detail-panel-context">Context</button>
+                <div class="detail-tab-status" id="json-sync-status"></div>
+              </div>
+
+              <section class="detail-panel" id="detail-panel-macro" role="tabpanel" aria-labelledby="detail-tab-macro">
+                <section class="slot-grid-section">
+                  <div class="slot-grid-header">
+                    <h2>Macro Palette</h2>
+                    <p id="current-location-label"></p>
+                  </div>
+                  <div id="slot-grid" class="slot-grid"></div>
+                </section>
+
+                <div class="macro-editor-card">
+                  <div class="macro-card-header">
+                    <div>
+                      <p class="card-kicker">Selected Macro</p>
+                      <h2 id="selected-slot-title">No slot selected</h2>
+                    </div>
+                    <div class="macro-chip" id="selected-slot-modifier"></div>
+                  </div>
+
+                  <label class="field-group">
+                    <span>Name</span>
+                    <input id="macro-name-input" type="text" maxlength="32" placeholder="Macro name">
+                  </label>
+
+                  <div id="macro-lines" class="macro-lines"></div>
                 </div>
-                <div class="macro-chip" id="selected-slot-modifier"></div>
-              </div>
+              </section>
 
-              <label class="field-group">
-                <span>Name</span>
-                <input id="macro-name-input" type="text" maxlength="32" placeholder="Macro name">
-              </label>
+              <section class="detail-panel" id="detail-panel-json" role="tabpanel" aria-labelledby="detail-tab-json" hidden>
+                <div class="json-editor-card">
+                  <div class="json-card-header">
+                    <div>
+                      <p class="card-kicker">Selected Profile JSON</p>
+                      <h2>Structured JSON View</h2>
+                      <p class="json-target-label" id="json-target-label"></p>
+                    </div>
+                    <div class="json-actions">
+                      <button class="button secondary" id="format-json-button" type="button">Format JSON</button>
+                      <button class="button secondary" id="reset-json-button" type="button">Reset JSON</button>
+                    </div>
+                  </div>
 
-              <div id="macro-lines" class="macro-lines"></div>
-            </article>
+                  <p class="json-status-message" id="json-status-message"></p>
+                  <div class="json-validation" id="json-validation" hidden></div>
+                  <div class="json-editor-shell" id="json-editor"></div>
+                </div>
+              </section>
 
-            <article class="meta-card">
-              <div class="meta-card-section">
-                <p class="card-kicker">Import</p>
-                <h2>File Context</h2>
-                <dl id="file-metadata" class="metadata-list"></dl>
-              </div>
-              <div class="meta-card-section">
-                <p class="card-kicker">Status</p>
-                <p id="format-status"></p>
-              </div>
-              <div class="meta-card-section">
-                <p class="card-kicker">Next Step</p>
-                <p>Use this scaffold to validate layout and state flow while the real binary parser and writer are completed against live macro files.</p>
-              </div>
+              <section class="detail-panel" id="detail-panel-context" role="tabpanel" aria-labelledby="detail-tab-context" hidden>
+                <article class="meta-card">
+                  <div class="meta-card-section">
+                    <p class="card-kicker">Import</p>
+                    <h2>File Context</h2>
+                    <dl id="file-metadata" class="metadata-list"></dl>
+                  </div>
+                  <div class="meta-card-section">
+                    <p class="card-kicker">Status</p>
+                    <p id="format-status"></p>
+                  </div>
+                  <div class="meta-card-section">
+                    <p class="card-kicker">Next Step</p>
+                    <p>Use this scaffold to validate layout and state flow while the real binary parser and writer are completed against live macro files.</p>
+                  </div>
+                </article>
+              </section>
             </article>
           </section>
         </section>
