@@ -9,11 +9,20 @@ import {
   inspectMacroFiles
 } from './lib/ffxiMacroFormat.js';
 import { AUTO_TRANSLATE_PHRASES } from './lib/ffxiAutoTranslateData.js';
+import {
+  applyEditableJsonPayload,
+  getEditableJsonPayload,
+  serializeEditableJsonPayload,
+  syncBundleUsageMetrics,
+  validateAndNormalizeEditableJsonPayload
+} from './lib/editableJsonBridge.js';
 import { zipSync } from 'https://cdn.jsdelivr.net/npm/fflate@0.8.3/esm/browser.js';
 
 const AUTO_TRANSLATE_OPEN = '《';
 const AUTO_TRANSLATE_CLOSE = '》';
 const AUTO_TRANSLATE_RESULT_LIMIT = 60;
+const BLANK_JSON_DRAFT_KEY = '__blank-workspace__';
+const MONACO_BASE_URL = new URL('../vendor/monaco/vs', import.meta.url).href.replace(/\/$/, '');
 const AUTO_TRANSLATE_CHOICES = Array.from(new Set(AUTO_TRANSLATE_PHRASES.values()))
   .filter((phrase) => phrase && phrase.trim().length >= 3)
   .sort((left, right) => left.localeCompare(right));
@@ -157,9 +166,12 @@ const state = {
   selectedPageIndex: 0,
   selectedSlotId: 'ctrl-1',
   slotFilter: 'all',
+  detailTab: 'macro',
+  jsonDrafts: {},
   importScope: 'bundle',
   autoTranslatePicker: {
     isOpen: false,
+    target: 'macro',
     lineIndex: null,
     searchTerm: '',
     selectedIndex: 0,
@@ -181,10 +193,23 @@ const elements = {
   statusPill: document.querySelector('#status-pill'),
   currentLocationLabel: document.querySelector('#current-location-label'),
   slotGrid: document.querySelector('#slot-grid'),
+  detailTabMacro: document.querySelector('#detail-tab-macro'),
+  detailTabJson: document.querySelector('#detail-tab-json'),
+  detailTabContext: document.querySelector('#detail-tab-context'),
+  detailPanelMacro: document.querySelector('#detail-panel-macro'),
+  detailPanelJson: document.querySelector('#detail-panel-json'),
+  detailPanelContext: document.querySelector('#detail-panel-context'),
+  jsonSyncStatus: document.querySelector('#json-sync-status'),
   selectedSlotTitle: document.querySelector('#selected-slot-title'),
   selectedSlotModifier: document.querySelector('#selected-slot-modifier'),
   macroNameInput: document.querySelector('#macro-name-input'),
   macroLines: document.querySelector('#macro-lines'),
+  jsonTargetLabel: document.querySelector('#json-target-label'),
+  jsonStatusMessage: document.querySelector('#json-status-message'),
+  jsonValidation: document.querySelector('#json-validation'),
+  jsonEditor: document.querySelector('#json-editor'),
+  formatJsonButton: document.querySelector('#format-json-button'),
+  resetJsonButton: document.querySelector('#reset-json-button'),
   fileMetadata: document.querySelector('#file-metadata'),
   formatStatus: document.querySelector('#format-status'),
   macroFileInput: document.querySelector('#macro-file-input'),
@@ -193,6 +218,393 @@ const elements = {
   exportStatus: document.querySelector('#export-status'),
   createBlankButton: document.querySelector('#create-blank-button')
 };
+
+let jsonEditorView = null;
+let isSyncingJsonEditor = false;
+let jsonEditorReadyPromise = null;
+
+function loadExternalScript(src) {
+  return new Promise((resolve, reject) => {
+    const existingScript = document.querySelector(`script[data-external-src="${src}"]`);
+    if (existingScript) {
+      if (existingScript.dataset.loaded === 'true') {
+        resolve();
+        return;
+      }
+
+      existingScript.addEventListener('load', () => resolve(), { once: true });
+      existingScript.addEventListener('error', () => reject(new Error(`Failed to load ${src}`)), { once: true });
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.src = src;
+    script.async = true;
+    script.dataset.externalSrc = src;
+    script.addEventListener('load', () => {
+      script.dataset.loaded = 'true';
+      resolve();
+    }, { once: true });
+    script.addEventListener('error', () => reject(new Error(`Failed to load ${src}`)), { once: true });
+    document.head.appendChild(script);
+  });
+}
+
+function createJsonEditor() {
+  if (jsonEditorReadyPromise) {
+    return jsonEditorReadyPromise;
+  }
+
+  jsonEditorReadyPromise = loadExternalScript(`${MONACO_BASE_URL}/loader.js`).then(() => new Promise((resolve, reject) => {
+    const monacoRequire = globalThis.require;
+    if (typeof monacoRequire !== 'function') {
+      reject(new Error('Monaco loader failed to initialize.'));
+      return;
+    }
+
+    globalThis.MonacoEnvironment = {
+      getWorkerUrl() {
+        const workerSource = [
+          `self.MonacoEnvironment = { baseUrl: '${MONACO_BASE_URL}/' };`,
+          `importScripts('${MONACO_BASE_URL}/base/worker/workerMain.js');`
+        ].join('\n');
+
+        return `data:text/javascript;charset=utf-8,${encodeURIComponent(workerSource)}`;
+      }
+    };
+
+    monacoRequire.config({ paths: { vs: MONACO_BASE_URL } });
+    monacoRequire(['vs/editor/editor.main', 'vs/language/json/monaco.contribution'], () => {
+      const monaco = globalThis.monaco;
+      monaco.languages.json.jsonDefaults.setDiagnosticsOptions({
+        validate: true,
+        allowComments: false,
+        enableSchemaRequest: false,
+        schemas: []
+      });
+
+      jsonEditorView = monaco.editor.create(elements.jsonEditor, {
+        value: '',
+        language: 'json',
+        theme: 'vs-dark',
+        automaticLayout: true,
+        minimap: { enabled: true },
+        scrollBeyondLastLine: false,
+        wordWrap: 'on',
+        wrappingIndent: 'indent',
+        tabSize: 2,
+        insertSpaces: true,
+        detectIndentation: false,
+        renderWhitespace: 'selection',
+        renderValidationDecorations: 'on',
+        bracketPairColorization: { enabled: true },
+        guides: {
+          bracketPairs: true,
+          indentation: true
+        },
+        folding: true,
+        glyphMargin: true,
+        lineNumbers: 'on',
+        fontSize: 14,
+        fontFamily: 'Cascadia Code, Fira Code, Consolas, monospace',
+        padding: {
+          top: 12,
+          bottom: 12
+        }
+      });
+
+      jsonEditorView.onDidChangeModelContent(() => {
+        if (isSyncingJsonEditor) {
+          return;
+        }
+
+        handleJsonEditorChange(jsonEditorView.getValue());
+      });
+
+      jsonEditorView.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Space, () => {
+        openJsonAutoTranslatePicker();
+      });
+
+      resolve(jsonEditorView);
+    }, reject);
+  }));
+
+  return jsonEditorReadyPromise;
+}
+
+function setJsonEditorText(value) {
+  createJsonEditor().then(() => {
+    const nextValue = String(value ?? '');
+    const model = jsonEditorView.getModel();
+    const currentValue = model?.getValue() ?? '';
+
+    if (currentValue === nextValue) {
+      jsonEditorView.layout();
+      return;
+    }
+
+    isSyncingJsonEditor = true;
+    model.setValue(nextValue);
+    isSyncingJsonEditor = false;
+    jsonEditorView.layout();
+  });
+}
+
+function getJsonEditorSelectionOffsets() {
+  if (!jsonEditorView) {
+    return null;
+  }
+
+  const model = jsonEditorView.getModel();
+  const selectionRange = jsonEditorView.getSelection();
+  if (!model || !selectionRange) {
+    return null;
+  }
+
+  return {
+    selectionStart: model.getOffsetAt(selectionRange.getStartPosition()),
+    selectionEnd: model.getOffsetAt(selectionRange.getEndPosition())
+  };
+}
+
+function focusJsonEditorAtOffset(offset) {
+  createJsonEditor().then(() => {
+    const model = jsonEditorView.getModel();
+    if (!model) {
+      return;
+    }
+
+    const position = model.getPositionAt(Math.max(0, offset));
+    const monaco = globalThis.monaco;
+    jsonEditorView.focus();
+    jsonEditorView.setSelection(new monaco.Selection(position.lineNumber, position.column, position.lineNumber, position.column));
+    jsonEditorView.revealPositionInCenterIfOutsideViewport(position);
+  });
+}
+
+function getCurrentEditableJsonPayload() {
+  return getEditableJsonPayload({
+    bundle: getCurrentBundle(),
+    books: state.macroSet.books
+  });
+}
+
+function getCurrentEditableJsonReferencePayload() {
+  return getEditableJsonPayload({
+    bundle: getCurrentBundle(),
+    books: state.macroSet.books,
+    includeEmpty: true
+  });
+}
+
+function getCurrentJsonDraftKey() {
+  return getCurrentBundle()?.bundleKey ?? BLANK_JSON_DRAFT_KEY;
+}
+
+function createJsonDraft(text, normalizedText) {
+  return {
+    text,
+    normalizedText,
+    lastStructuredNormalizedText: normalizedText,
+    syntaxError: '',
+    validationIssues: []
+  };
+}
+
+function getCurrentJsonDraft() {
+  const draftKey = getCurrentJsonDraftKey();
+  const currentPayload = getCurrentEditableJsonPayload();
+  const currentText = serializeEditableJsonPayload(currentPayload);
+  const currentNormalizedText = JSON.stringify(currentPayload);
+  const existingDraft = state.jsonDrafts[draftKey];
+
+  if (!existingDraft) {
+    const nextDraft = createJsonDraft(currentText, currentNormalizedText);
+    state.jsonDrafts[draftKey] = nextDraft;
+    return nextDraft;
+  }
+
+  existingDraft.lastStructuredNormalizedText = currentNormalizedText;
+  if (!existingDraft.syntaxError && existingDraft.validationIssues.length === 0) {
+    existingDraft.text = currentText;
+    existingDraft.normalizedText = currentNormalizedText;
+  }
+
+  return existingDraft;
+}
+
+function syncCurrentUsageMetrics() {
+  syncBundleUsageMetrics(getCurrentBundle());
+}
+
+function getJsonDraftStatus(draft) {
+  if (!draft) {
+    return {
+      tone: 'ok',
+      pill: 'Synchronized',
+      message: 'JSON will stay synchronized with the selected profile whenever the draft is valid.',
+      issues: []
+    };
+  }
+
+  if (draft.syntaxError) {
+    return {
+      tone: 'error',
+      pill: 'Syntax error',
+      message: 'The JSON editor is detached until the syntax is corrected. Macro palettes stay unchanged.',
+      issues: [draft.syntaxError]
+    };
+  }
+
+  if (draft.validationIssues.length > 0) {
+    return {
+      tone: 'error',
+      pill: 'Schema error',
+      message: 'The JSON is well-formed but does not match the editable macro structure. Macro palettes stay unchanged.',
+      issues: draft.validationIssues
+    };
+  }
+
+  return {
+    tone: 'ok',
+    pill: 'Synchronized',
+    message: 'Valid JSON changes apply immediately to the selected profile and preserve auto-translate markers like 《Aggressor》.',
+    issues: []
+  };
+}
+
+function renderJsonPanel(syncFromStructured = true) {
+  createJsonEditor();
+  const draft = syncFromStructured ? getCurrentJsonDraft() : (state.jsonDrafts[getCurrentJsonDraftKey()] ?? getCurrentJsonDraft());
+  const status = getJsonDraftStatus(draft);
+
+  elements.jsonTargetLabel.textContent = `Selected profile: ${getCurrentBundle()?.label ?? 'Blank workspace'}`;
+  elements.jsonSyncStatus.textContent = status.pill;
+  elements.jsonSyncStatus.className = `detail-tab-status status-${status.tone}`;
+  elements.jsonStatusMessage.textContent = status.message;
+  elements.jsonValidation.hidden = status.issues.length === 0;
+  elements.jsonValidation.replaceChildren(...(status.issues.length > 0 ? [(() => {
+    const list = document.createElement('ul');
+    status.issues.forEach((issue) => {
+      const item = document.createElement('li');
+      item.textContent = issue;
+      list.appendChild(item);
+    });
+    return list;
+  })()] : []));
+  elements.formatJsonButton.disabled = Boolean(draft.syntaxError);
+  setJsonEditorText(draft.text);
+}
+
+function renderDetailTabs() {
+  const isMacroTab = state.detailTab === 'macro';
+  const isJsonTab = state.detailTab === 'json';
+  const isContextTab = state.detailTab === 'context';
+  elements.detailTabMacro.classList.toggle('active', isMacroTab);
+  elements.detailTabMacro.setAttribute('aria-selected', String(isMacroTab));
+  elements.detailTabJson.classList.toggle('active', isJsonTab);
+  elements.detailTabJson.setAttribute('aria-selected', String(isJsonTab));
+  elements.detailTabContext.classList.toggle('active', isContextTab);
+  elements.detailTabContext.setAttribute('aria-selected', String(isContextTab));
+  elements.detailPanelMacro.hidden = !isMacroTab;
+  elements.detailPanelJson.hidden = !isJsonTab;
+  elements.detailPanelContext.hidden = !isContextTab;
+
+  if (isJsonTab) {
+    createJsonEditor().then(() => {
+      jsonEditorView.layout();
+    });
+  }
+}
+
+function syncJsonDraftFromStructuredState() {
+  const draft = getCurrentJsonDraft();
+  renderJsonPanel(false);
+  return draft;
+}
+
+function refreshAfterJsonApply() {
+  renderBooks();
+  renderPages();
+  renderSlots();
+  renderEditor();
+  renderExportState();
+  updateMetadata();
+  updateStatus();
+  renderDetailTabs();
+  renderJsonPanel(false);
+}
+
+function handleJsonEditorChange(text) {
+  const draft = state.jsonDrafts[getCurrentJsonDraftKey()] ?? getCurrentJsonDraft();
+  draft.text = text;
+  draft.syntaxError = '';
+  draft.validationIssues = [];
+
+  let parsedJson;
+  try {
+    parsedJson = JSON.parse(text);
+  } catch (error) {
+    draft.normalizedText = null;
+    draft.syntaxError = error.message;
+    renderJsonPanel(false);
+    return;
+  }
+
+  const { issues, normalizedPayload } = validateAndNormalizeEditableJsonPayload(parsedJson, getCurrentEditableJsonReferencePayload());
+  if (issues.length > 0 || !normalizedPayload) {
+    draft.normalizedText = null;
+    draft.validationIssues = issues;
+    renderJsonPanel(false);
+    return;
+  }
+
+  applyEditableJsonPayload(normalizedPayload, {
+    bundle: getCurrentBundle(),
+    books: state.macroSet.books
+  });
+  draft.normalizedText = JSON.stringify(normalizedPayload);
+  draft.lastStructuredNormalizedText = draft.normalizedText;
+  refreshAfterJsonApply();
+}
+
+function formatCurrentJsonDraft() {
+  const draft = state.jsonDrafts[getCurrentJsonDraftKey()] ?? getCurrentJsonDraft();
+
+  let parsedJson;
+  try {
+    parsedJson = JSON.parse(draft.text);
+  } catch (error) {
+    draft.syntaxError = error.message;
+    renderJsonPanel(false);
+    return;
+  }
+
+  const { issues, normalizedPayload } = validateAndNormalizeEditableJsonPayload(parsedJson, getCurrentEditableJsonReferencePayload());
+  if (issues.length > 0 || !normalizedPayload) {
+    draft.validationIssues = issues;
+    draft.syntaxError = '';
+    renderJsonPanel(false);
+    return;
+  }
+
+  draft.text = serializeEditableJsonPayload(normalizedPayload);
+  draft.normalizedText = JSON.stringify(normalizedPayload);
+  draft.lastStructuredNormalizedText = draft.normalizedText;
+  setJsonEditorText(draft.text);
+  applyEditableJsonPayload(normalizedPayload, {
+    bundle: getCurrentBundle(),
+    books: state.macroSet.books
+  });
+  refreshAfterJsonApply();
+}
+
+function resetCurrentJsonDraft() {
+  const draftKey = getCurrentJsonDraftKey();
+  const payload = getCurrentEditableJsonPayload();
+  state.jsonDrafts[draftKey] = createJsonDraft(serializeEditableJsonPayload(payload), JSON.stringify(payload));
+  renderJsonPanel(false);
+}
 
 function createAutoTranslatePicker() {
   const overlay = document.createElement('div');
@@ -320,9 +732,10 @@ function selectProtectedToken(textarea, protectedSelection) {
 }
 
 function closeAutoTranslatePicker() {
-  const { lineIndex, insertionStart } = state.autoTranslatePicker;
+  const { target, lineIndex, insertionStart } = state.autoTranslatePicker;
   state.autoTranslatePicker = {
     isOpen: false,
+    target: 'macro',
     lineIndex: null,
     searchTerm: '',
     selectedIndex: 0,
@@ -330,6 +743,11 @@ function closeAutoTranslatePicker() {
     insertionEnd: 0
   };
   renderAutoTranslatePicker();
+
+  if (target === 'json') {
+    requestAnimationFrame(() => focusJsonEditorAtOffset(insertionStart));
+    return;
+  }
 
   if (lineIndex !== null) {
     requestAnimationFrame(() => focusLineTextarea(lineIndex, insertionStart));
@@ -382,6 +800,7 @@ function openAutoTranslatePicker(lineIndex, textarea) {
   const context = getAutoTranslateInsertionContext(textarea.value, textarea.selectionStart ?? 0, textarea.selectionEnd ?? textarea.selectionStart ?? 0);
   state.autoTranslatePicker = {
     isOpen: true,
+    target: 'macro',
     lineIndex,
     searchTerm: context.searchTerm,
     selectedIndex: 0,
@@ -395,21 +814,90 @@ function openAutoTranslatePicker(lineIndex, textarea) {
   });
 }
 
+function openJsonAutoTranslatePicker() {
+  createJsonEditor().then(() => {
+    const offsets = getJsonEditorSelectionOffsets();
+    if (!offsets) {
+      return;
+    }
+
+    const context = getAutoTranslateInsertionContext(jsonEditorView.getValue(), offsets.selectionStart, offsets.selectionEnd);
+    state.autoTranslatePicker = {
+      isOpen: true,
+      target: 'json',
+      lineIndex: null,
+      searchTerm: context.searchTerm,
+      selectedIndex: 0,
+      insertionStart: context.insertionStart,
+      insertionEnd: context.insertionEnd
+    };
+    renderAutoTranslatePicker();
+    requestAnimationFrame(() => {
+      elements.autoTranslateSearch.focus();
+      elements.autoTranslateSearch.select();
+    });
+  });
+}
+
 function insertAutoTranslatePhrase(phrase) {
   const pickerState = state.autoTranslatePicker;
+  const token = formatAutoTranslateDisplay(phrase);
+
+  if (pickerState.target === 'json') {
+    createJsonEditor().then(() => {
+      const monaco = globalThis.monaco;
+      const model = jsonEditorView.getModel();
+      if (!model) {
+        return;
+      }
+
+      const startPosition = model.getPositionAt(pickerState.insertionStart);
+      const endPosition = model.getPositionAt(pickerState.insertionEnd);
+
+      isSyncingJsonEditor = true;
+      jsonEditorView.executeEdits('auto-translate-token', [
+        {
+          range: new monaco.Range(
+            startPosition.lineNumber,
+            startPosition.column,
+            endPosition.lineNumber,
+            endPosition.column
+          ),
+          text: token,
+          forceMoveMarkers: true
+        }
+      ]);
+      isSyncingJsonEditor = false;
+
+      handleJsonEditorChange(model.getValue());
+      state.autoTranslatePicker = {
+        isOpen: false,
+        target: 'macro',
+        lineIndex: null,
+        searchTerm: '',
+        selectedIndex: 0,
+        insertionStart: 0,
+        insertionEnd: 0
+      };
+      renderAutoTranslatePicker();
+      requestAnimationFrame(() => focusJsonEditorAtOffset(pickerState.insertionStart + token.length));
+    });
+    return;
+  }
+
   if (pickerState.lineIndex === null) {
     return;
   }
 
   const slot = getCurrentSlot();
   const currentLine = slot.lines[pickerState.lineIndex] ?? '';
-  const token = formatAutoTranslateDisplay(phrase);
   const nextLine = sanitizeMacroLineInput(`${currentLine.slice(0, pickerState.insertionStart)}${token}${currentLine.slice(pickerState.insertionEnd)}`);
   const nextCaret = pickerState.insertionStart + token.length;
 
   slot.lines[pickerState.lineIndex] = nextLine;
   state.autoTranslatePicker = {
     isOpen: false,
+    target: 'macro',
     lineIndex: null,
     searchTerm: '',
     selectedIndex: 0,
@@ -417,9 +905,13 @@ function insertAutoTranslatePhrase(phrase) {
     insertionEnd: 0
   };
   renderAutoTranslatePicker();
+  syncCurrentUsageMetrics();
   renderEditor();
+  renderPages();
+  renderBooks();
   renderSlots();
   refreshEditIndicators();
+  syncJsonDraftFromStructuredState();
   requestAnimationFrame(() => focusLineTextarea(pickerState.lineIndex, nextCaret));
 }
 
@@ -879,7 +1371,11 @@ function renderEditor() {
 
       counter.className = `counter${isMacroLineOverLimit(sanitizedValue) ? ' over-limit' : ''}`;
       counter.textContent = getMacroLineCounterText(sanitizedValue);
+      syncCurrentUsageMetrics();
+      renderPages();
+      renderBooks();
       refreshEditIndicators();
+      syncJsonDraftFromStructuredState();
     });
 
     header.append(label, counter);
@@ -892,12 +1388,15 @@ function renderEditor() {
 
 function render() {
   syncSelectedBundle();
+  syncCurrentUsageMetrics();
   updateLayoutMode();
   renderBundles();
   renderBooks();
   renderPages();
   renderSlots();
   renderEditor();
+  renderDetailTabs();
+  renderJsonPanel();
   renderExportState();
   updateMetadata();
   updateStatus();
@@ -933,11 +1432,39 @@ elements.slotFilter.addEventListener('change', (event) => {
   renderSlots();
 });
 
+elements.detailTabMacro.addEventListener('click', () => {
+  state.detailTab = 'macro';
+  renderDetailTabs();
+});
+
+elements.detailTabJson.addEventListener('click', () => {
+  state.detailTab = 'json';
+  renderDetailTabs();
+  renderJsonPanel(false);
+});
+
+elements.detailTabContext.addEventListener('click', () => {
+  state.detailTab = 'context';
+  renderDetailTabs();
+});
+
 elements.macroNameInput.addEventListener('input', (event) => {
   const slot = getCurrentSlot();
   slot.name = event.currentTarget.value;
+  syncCurrentUsageMetrics();
+  renderPages();
   renderSlots();
+  renderBooks();
   refreshEditIndicators();
+  syncJsonDraftFromStructuredState();
+});
+
+elements.formatJsonButton.addEventListener('click', () => {
+  formatCurrentJsonDraft();
+});
+
+elements.resetJsonButton.addEventListener('click', () => {
+  resetCurrentJsonDraft();
 });
 
 elements.createBlankButton.addEventListener('click', () => {

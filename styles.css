@@ -192,6 +192,7 @@ textarea {
   display: grid;
   grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
   gap: 16px;
+  align-items: start;
 }
 
 .panel {
@@ -385,14 +386,148 @@ textarea {
 
 .detail-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.3fr) minmax(280px, 0.8fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
 }
 
+.detail-workspace-card {
+  display: grid;
+  gap: 14px;
+}
+
+.detail-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid rgba(95, 122, 148, 0.28);
+  border-radius: 16px;
+  background: rgba(11, 19, 27, 0.9);
+}
+
+.detail-tab {
+  min-height: 40px;
+  padding: 8px 16px;
+  border: 1px solid rgba(95, 122, 148, 0.28);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.detail-tab.active {
+  color: #071116;
+  background: linear-gradient(135deg, #7bd5e0, #46a9b6);
+  border-color: transparent;
+}
+
+.detail-tab-status {
+  margin-left: auto;
+  min-height: 34px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  background: rgba(33, 62, 80, 0.7);
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.detail-tab-status.status-ok {
+  color: #90f5d3;
+  background: rgba(26, 77, 61, 0.65);
+}
+
+.detail-tab-status.status-error {
+  color: #ffd2d2;
+  background: rgba(124, 39, 54, 0.7);
+}
+
+.detail-panel[hidden] {
+  display: none;
+}
+
 .macro-editor-card,
-.meta-card {
+.meta-card,
+.json-editor-card {
   border-radius: 18px;
   padding: 14px;
+}
+
+.json-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 16px;
+}
+
+.json-target-label,
+.json-status-message {
+  margin: 6px 0 0;
+  color: var(--muted);
+}
+
+.json-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: end;
+  gap: 8px;
+}
+
+.json-validation {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 122, 141, 0.4);
+  border-radius: 12px;
+  background: rgba(83, 21, 32, 0.55);
+  color: #ffd2d2;
+}
+
+.json-validation[hidden] {
+  display: none;
+}
+
+.json-validation ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.json-editor-shell {
+  height: 520px;
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+  background: rgba(6, 12, 18, 0.96);
+}
+
+.json-editor-shell .monaco-editor,
+.json-editor-shell .monaco-editor .margin,
+.json-editor-shell .monaco-editor .monaco-editor-background {
+  background: rgba(6, 12, 18, 0.96);
+}
+
+.json-editor-shell .monaco-editor,
+.json-editor-shell .monaco-editor .view-lines {
+  font-family: "Cascadia Code", "Fira Code", Consolas, monospace;
+}
+
+.json-editor-shell .monaco-editor .margin {
+  background: rgba(10, 17, 24, 0.98);
+}
+
+.json-editor-shell .monaco-editor .current-line,
+.json-editor-shell .monaco-editor .margin-view-overlays .current-line-margin {
+  background: rgba(65, 93, 116, 0.2);
+}
+
+.json-editor-shell .monaco-editor .selected-text {
+  background: rgba(70, 169, 182, 0.35);
+}
+
+.json-editor-shell .monaco-editor .minimap {
+  border-left: 1px solid rgba(95, 122, 148, 0.18);
 }
 
 .macro-chip {
@@ -558,6 +693,21 @@ button:focus,
 
 .metadata-list dt {
   font-weight: 700;
+}
+
+@media (max-width: 900px) {
+  .json-card-header {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .json-actions {
+    justify-content: start;
+  }
+
+  .detail-tab-status {
+    margin-left: 0;
+  }
 }
 
 @media (max-width: 1024px) {
