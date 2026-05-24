@@ -2,6 +2,7 @@ import {
   BOOK_COUNT,
   MACRO_LINE_COUNT,
   MACRO_LINE_LIMIT,
+  buildBundleSearchText,
   createBlankMacroSet,
   exportBundleFiles,
   exportMacroSetFiles,
@@ -382,6 +383,163 @@ function focusJsonEditorAtOffset(offset) {
   });
 }
 
+function skipJsonWhitespace(text, startIndex) {
+  let index = startIndex;
+  while (index < text.length && /\s/.test(text[index])) {
+    index += 1;
+  }
+  return index;
+}
+
+function parseJsonStringToken(text, startIndex) {
+  let index = startIndex + 1;
+  while (index < text.length) {
+    if (text[index] === '\\') {
+      index += 2;
+      continue;
+    }
+    if (text[index] === '"') {
+      return {
+        text: text.slice(startIndex + 1, index),
+        endIndex: index + 1,
+        startIndex
+      };
+    }
+    index += 1;
+  }
+
+  throw new Error('Unterminated JSON string while locating validation issue.');
+}
+
+function buildJsonPathKey(path) {
+  return path.map((segment) => (typeof segment === 'number' ? `[${segment}]` : (path.indexOf(segment) === 0 ? segment : `.${segment}`))).join('');
+}
+
+function formatJsonIssuePath(path = []) {
+  if (!Array.isArray(path) || path.length === 0) {
+    return 'root';
+  }
+
+  return path.reduce((label, segment, index) => {
+    if (typeof segment === 'number') {
+      return `${label}[${segment}]`;
+    }
+    if (index === 0) {
+      return segment;
+    }
+    return `${label}.${segment}`;
+  }, '');
+}
+
+function buildJsonPathOffsetMap(text) {
+  const pathOffsets = new Map();
+
+  const parseValue = (startIndex, path) => {
+    let index = skipJsonWhitespace(text, startIndex);
+    const pathLabel = formatJsonIssuePath(path);
+    if (!pathOffsets.has(pathLabel)) {
+      pathOffsets.set(pathLabel, index);
+    }
+    const character = text[index];
+
+    if (character === '{') {
+      return parseObject(index, path);
+    }
+
+    if (character === '[') {
+      return parseArray(index, path);
+    }
+
+    if (character === '"') {
+      return parseJsonStringToken(text, index).endIndex;
+    }
+
+    while (index < text.length && !/[\s,}\]]/.test(text[index])) {
+      index += 1;
+    }
+    return index;
+  };
+
+  const parseObject = (startIndex, path) => {
+    let index = startIndex + 1;
+    index = skipJsonWhitespace(text, index);
+    if (text[index] === '}') {
+      return index + 1;
+    }
+
+    while (index < text.length) {
+      const keyToken = parseJsonStringToken(text, index);
+      const propertyPath = [...path, keyToken.text];
+      pathOffsets.set(formatJsonIssuePath(propertyPath), keyToken.startIndex);
+      index = skipJsonWhitespace(text, keyToken.endIndex);
+      index += 1;
+      index = parseValue(index, propertyPath);
+      index = skipJsonWhitespace(text, index);
+
+      if (text[index] === '}') {
+        return index + 1;
+      }
+
+      index += 1;
+      index = skipJsonWhitespace(text, index);
+    }
+
+    return index;
+  };
+
+  const parseArray = (startIndex, path) => {
+    let index = startIndex + 1;
+    let itemIndex = 0;
+    index = skipJsonWhitespace(text, index);
+    if (text[index] === ']') {
+      return index + 1;
+    }
+
+    while (index < text.length) {
+      index = parseValue(index, [...path, itemIndex]);
+      itemIndex += 1;
+      index = skipJsonWhitespace(text, index);
+
+      if (text[index] === ']') {
+        return index + 1;
+      }
+
+      index += 1;
+      index = skipJsonWhitespace(text, index);
+    }
+
+    return index;
+  };
+
+  parseValue(0, []);
+  return pathOffsets;
+}
+
+function getLocatedValidationIssues(text, issueDetails = []) {
+  if (!Array.isArray(issueDetails) || issueDetails.length === 0) {
+    return [];
+  }
+
+  let pathOffsets = null;
+  try {
+    pathOffsets = buildJsonPathOffsetMap(text);
+  } catch {
+    return issueDetails.map((issue) => ({ ...issue, pathLabel: formatJsonIssuePath(issue.path) }));
+  }
+
+  return issueDetails.map((issue) => {
+    const pathLabel = formatJsonIssuePath(issue.path);
+    const duplicateOfLabel = issue.duplicateOfPath ? formatJsonIssuePath(issue.duplicateOfPath) : '';
+    const offset = pathOffsets.get(pathLabel);
+    return {
+      ...issue,
+      pathLabel,
+      duplicateOfLabel,
+      offset: Number.isFinite(offset) ? offset : null
+    };
+  });
+}
+
 function getCurrentEditableJsonPayload() {
   return getEditableJsonPayload({
     bundle: getCurrentBundle(),
@@ -407,7 +565,8 @@ function createJsonDraft(text, normalizedText) {
     normalizedText,
     lastStructuredNormalizedText: normalizedText,
     syntaxError: '',
-    validationIssues: []
+    validationIssues: [],
+    validationIssueDetails: []
   };
 }
 
@@ -452,7 +611,7 @@ function getJsonDraftStatus(draft) {
       tone: 'error',
       pill: 'Syntax error',
       message: 'The JSON editor is detached until the syntax is corrected. Macro palettes stay unchanged.',
-      issues: [draft.syntaxError]
+      issues: [{ message: draft.syntaxError, pathLabel: 'syntax' }]
     };
   }
 
@@ -461,7 +620,7 @@ function getJsonDraftStatus(draft) {
       tone: 'error',
       pill: 'Schema error',
       message: 'The JSON is well-formed but does not match the editable macro structure. Macro palettes stay unchanged.',
-      issues: draft.validationIssues
+      issues: getLocatedValidationIssues(draft.text, draft.validationIssueDetails)
     };
   }
 
@@ -487,7 +646,31 @@ function renderJsonPanel(syncFromStructured = true) {
     const list = document.createElement('ul');
     status.issues.forEach((issue) => {
       const item = document.createElement('li');
-      item.textContent = issue;
+      const issueText = document.createElement('span');
+      issueText.textContent = issue.message;
+      item.appendChild(issueText);
+
+      if (issue.pathLabel) {
+        item.append(' ');
+        const link = document.createElement('button');
+        link.type = 'button';
+        link.className = 'json-validation-link';
+        link.textContent = `Jump to ${issue.pathLabel}`;
+        link.addEventListener('click', () => {
+          if (Number.isFinite(issue.offset)) {
+            focusJsonEditorAtOffset(issue.offset);
+          }
+        });
+        item.appendChild(link);
+      }
+
+      if (issue.duplicateOfLabel) {
+        const duplicateNote = document.createElement('span');
+        duplicateNote.className = 'json-validation-note';
+        duplicateNote.textContent = ` Conflicts with ${issue.duplicateOfLabel}.`;
+        item.appendChild(duplicateNote);
+      }
+
       list.appendChild(item);
     });
     return list;
@@ -540,6 +723,7 @@ function handleJsonEditorChange(text) {
   draft.text = text;
   draft.syntaxError = '';
   draft.validationIssues = [];
+  draft.validationIssueDetails = [];
 
   let parsedJson;
   try {
@@ -551,10 +735,11 @@ function handleJsonEditorChange(text) {
     return;
   }
 
-  const { issues, normalizedPayload } = validateAndNormalizeEditableJsonPayload(parsedJson, getCurrentEditableJsonReferencePayload());
+  const { issues, issueDetails = [], normalizedPayload } = validateAndNormalizeEditableJsonPayload(parsedJson, getCurrentEditableJsonReferencePayload());
   if (issues.length > 0 || !normalizedPayload) {
     draft.normalizedText = null;
     draft.validationIssues = issues;
+    draft.validationIssueDetails = issueDetails;
     renderJsonPanel(false);
     return;
   }
@@ -576,13 +761,15 @@ function formatCurrentJsonDraft() {
     parsedJson = JSON.parse(draft.text);
   } catch (error) {
     draft.syntaxError = error.message;
+    draft.validationIssueDetails = [];
     renderJsonPanel(false);
     return;
   }
 
-  const { issues, normalizedPayload } = validateAndNormalizeEditableJsonPayload(parsedJson, getCurrentEditableJsonReferencePayload());
+  const { issues, issueDetails = [], normalizedPayload } = validateAndNormalizeEditableJsonPayload(parsedJson, getCurrentEditableJsonReferencePayload());
   if (issues.length > 0 || !normalizedPayload) {
     draft.validationIssues = issues;
+    draft.validationIssueDetails = issueDetails;
     draft.syntaxError = '';
     renderJsonPanel(false);
     return;
@@ -1030,6 +1217,73 @@ function getCurrentBook() {
   return state.macroSet.books[state.selectedBookIndex];
 }
 
+function getFallbackBookName(bookIndex) {
+  return `Book ${bookIndex + 1}`;
+}
+
+function getBookDisplayName(book, bookIndex) {
+  const name = book?.title ?? book?.label ?? '';
+  return name && name.trim() ? name : getFallbackBookName(bookIndex);
+}
+
+function renameBlankBook(bookIndex, nextName) {
+  const book = state.macroSet.books[bookIndex];
+  if (!book) {
+    return;
+  }
+
+  book.label = nextName;
+}
+
+function renameParsedBook(bookIndex, nextName) {
+  const bundle = getCurrentBundle();
+  if (!bundle) {
+    return;
+  }
+
+  const targetBook = (bundle.parsedBooks ?? []).find((book) => book.bookIndex === bookIndex);
+  if (targetBook) {
+    targetBook.title = nextName;
+  }
+
+  if (Array.isArray(bundle.titles)) {
+    bundle.titles[bookIndex] = nextName;
+  }
+
+  let titleOffset = 0;
+  for (const titleBank of bundle.titleBanks ?? []) {
+    const titleCount = titleBank.titles?.length ?? 0;
+    if (bookIndex < titleOffset + titleCount) {
+      titleBank.titles[bookIndex - titleOffset] = nextName;
+      break;
+    }
+    titleOffset += titleCount;
+  }
+
+  (bundle.parsedMacroFiles ?? []).forEach((file) => {
+    if (file.bookIndex === bookIndex) {
+      file.candidateTitle = nextName;
+    }
+  });
+
+  bundle.searchText = buildBundleSearchText(bundle);
+}
+
+function handleBookRename(bookIndex, nextName) {
+  const parsedBook = getCurrentParsedBook();
+  if (parsedBook) {
+    renameParsedBook(bookIndex, nextName);
+  } else {
+    renameBlankBook(bookIndex, nextName);
+  }
+
+  refreshEditIndicators();
+  if (parsedBook?.bookIndex === bookIndex || state.selectedBookIndex === bookIndex) {
+    renderSlots();
+  }
+  syncJsonDraftFromStructuredState();
+}
+
 function getCurrentPage() {
   return getCurrentBook().pages[state.selectedPageIndex];
 }
@@ -1166,26 +1420,47 @@ function renderBooks() {
   const bundle = getCurrentBundle();
   const parsedBooks = bundle?.parsedBooks ?? [];
 
+  const setActiveBookEntry = (activeInput) => {
+    elements.bookList.querySelectorAll('.book-entry').forEach((entry) => {
+      entry.classList.toggle('active', entry.contains(activeInput));
+    });
+    elements.bookList.querySelectorAll('.book-name-input').forEach((input) => {
+      input.classList.toggle('active', input === activeInput);
+    });
+  };
+
   if (parsedBooks.length > 0) {
     elements.bookPanelTitle.textContent = 'Books';
     elements.bookCountLabel.textContent = `${parsedBooks.length} parsed`;
     elements.bookList.replaceChildren(...parsedBooks.map((book) => {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = `book-button${book.bookKey === state.selectedParsedBookKey ? ' active' : ''}`;
-      button.textContent = book.title;
-      button.title = book.title;
-      button.addEventListener('click', () => {
+      const entry = document.createElement('article');
+      entry.className = `book-entry${book.bookKey === state.selectedParsedBookKey ? ' active' : ''}`;
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = `book-name-input${book.bookKey === state.selectedParsedBookKey ? ' active' : ''}`;
+      input.value = book.title ?? '';
+      input.placeholder = getFallbackBookName(book.bookIndex);
+      input.maxLength = 16;
+      input.setAttribute('aria-label', `Book ${book.bookIndex + 1} name`);
+      input.addEventListener('focus', () => {
         state.selectedParsedBookKey = book.bookKey;
         state.selectedMacroFileName = book.pages.find((page) => page.usedSlotCount > 0)?.fileName ?? book.pages[0]?.fileName ?? null;
         state.selectedSlotId = 'ctrl-1';
-        render();
+        setActiveBookEntry(input);
+        renderPages();
+        renderSlots();
+        renderEditor();
       });
       const meta = document.createElement('span');
       meta.className = 'book-button-meta';
       meta.textContent = `${book.pages.length} page${book.pages.length === 1 ? '' : 's'} · ${book.usedPageCount} used`;
-      button.appendChild(meta);
-      return button;
+      input.addEventListener('input', (event) => {
+        const nextName = event.currentTarget.value;
+        handleBookRename(book.bookIndex, nextName);
+      });
+
+      entry.append(input, meta);
+      return entry;
     }));
     return;
   }
@@ -1193,17 +1468,31 @@ function renderBooks() {
   elements.bookPanelTitle.textContent = 'Books';
   elements.bookCountLabel.textContent = `${BOOK_COUNT} books`;
   elements.bookList.replaceChildren(...state.macroSet.books.map((book, index) => {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = `book-button${index === state.selectedBookIndex ? ' active' : ''}`;
-    button.textContent = book.label;
-    button.addEventListener('click', () => {
+    const entry = document.createElement('article');
+    entry.className = `book-entry${index === state.selectedBookIndex ? ' active' : ''}`;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = `book-name-input${index === state.selectedBookIndex ? ' active' : ''}`;
+    input.value = book.label ?? '';
+    input.placeholder = getFallbackBookName(index);
+    input.maxLength = 16;
+    input.setAttribute('aria-label', `Book ${index + 1} name`);
+    input.addEventListener('focus', () => {
       state.selectedBookIndex = index;
       state.selectedPageIndex = 0;
       state.selectedSlotId = 'ctrl-1';
-      render();
+      setActiveBookEntry(input);
+      renderPages();
+      renderSlots();
+      renderEditor();
     });
-    return button;
+    input.addEventListener('input', (event) => {
+      const nextName = event.currentTarget.value;
+      handleBookRename(index, nextName);
+    });
+
+    entry.append(input);
+    return entry;
   }));
 }
 
@@ -1284,12 +1573,12 @@ function renderSlots() {
 
   const parsedMacroFile = getCurrentParsedMacroFile();
   if (parsedMacroFile) {
-    elements.currentLocationLabel.textContent = `${getCurrentBundle()?.label || 'Bundle'} / ${getCurrentParsedBook()?.title || parsedMacroFile.candidateTitle || parsedMacroFile.fileName} / Page ${parsedMacroFile.pageIndex + 1}`;
+    elements.currentLocationLabel.textContent = `${getCurrentBundle()?.label || 'Bundle'} / ${getBookDisplayName(getCurrentParsedBook(), getCurrentParsedBook()?.bookIndex ?? 0)} / Page ${parsedMacroFile.pageIndex + 1}`;
     return;
   }
 
   const currentBook = getCurrentBook();
-  elements.currentLocationLabel.textContent = `${currentBook.label} / ${getCurrentPage().label}`;
+  elements.currentLocationLabel.textContent = `${getBookDisplayName(currentBook, state.selectedBookIndex)} / ${getCurrentPage().label}`;
 }
 
 function renderEditor() {

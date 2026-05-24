@@ -1,7 +1,8 @@
 import {
   MACRO_LINE_COUNT,
   MACRO_LINE_LIMIT,
-  getMacroLineByteLength
+  getMacroLineByteLength,
+  parseTitleFile
 } from './ffxiMacroFormat.js';
 
 function sanitizeMacroLineInput(value) {
@@ -10,6 +11,38 @@ function sanitizeMacroLineInput(value) {
 
 function createEmptyLines() {
   return Array.from({ length: MACRO_LINE_COUNT }, () => '');
+}
+
+function getDefaultBookName(bookIndex) {
+  return `Book ${bookIndex + 1}`;
+}
+
+function getEditableBookName(book) {
+  const bookIndex = book.bookIndex ?? book.index ?? 0;
+  return String(book.title ?? book.label ?? getDefaultBookName(bookIndex));
+}
+
+function getBundleDefaultTitles(bundle) {
+  const defaultTitles = new Map();
+
+  for (const titleBank of bundle?.titleBanks ?? []) {
+    const originalTitles = titleBank.originalBytes
+      ? parseTitleFile(titleBank.fileName, titleBank.originalBytes).titles
+      : (titleBank.titles ?? []);
+
+    originalTitles.forEach((title, index) => {
+      const bookIndex = (titleBank.bankIndex * originalTitles.length) + index;
+      defaultTitles.set(bookIndex, title || getDefaultBookName(bookIndex));
+    });
+  }
+
+  for (const book of bundle?.parsedBooks ?? []) {
+    if (!defaultTitles.has(book.bookIndex)) {
+      defaultTitles.set(book.bookIndex, getDefaultBookName(book.bookIndex));
+    }
+  }
+
+  return defaultTitles;
 }
 
 export function isUsedSlot(slot) {
@@ -23,8 +56,6 @@ export function getPageSlots(page) {
 export function getEditableSlotPayload(slot) {
   return {
     id: slot.id,
-    modifier: slot.modifier,
-    key: slot.key,
     name: String(slot.name ?? ''),
     lines: Array.from({ length: MACRO_LINE_COUNT }, (_, lineIndex) => String(slot.lines?.[lineIndex] ?? ''))
   };
@@ -47,9 +78,12 @@ export function getEditableBookPayload(book, options = {}) {
   const pages = (book.pages ?? [])
     .map((page) => getEditablePagePayload(page, options))
     .filter((page) => includeEmpty || page.slots.length > 0);
+  const bookIndex = book.bookIndex ?? book.index ?? 0;
+  const bookName = getEditableBookName(book);
 
   return {
-    bookIndex: book.bookIndex ?? book.index ?? 0,
+    bookIndex,
+    bookName,
     pages
   };
 }
@@ -61,7 +95,7 @@ export function getEditableJsonPayload({ bundle = null, books = [], includeEmpty
   return {
     books: sourceBooks
       .map((book) => getEditableBookPayload(book, { includeEmpty }))
-      .filter((book) => includeEmpty || book.pages.length > 0)
+      .filter((book) => includeEmpty || book.pages.length > 0 || book.bookName !== getDefaultBookName(book.bookIndex))
   };
 }
 
@@ -82,10 +116,17 @@ export function syncBundleUsageMetrics(bundle) {
 
 export function validateAndNormalizeEditableJsonPayload(payload, expectedPayload) {
   const issues = [];
+  const issueDetails = [];
+
+  const pushIssue = (message, options = {}) => {
+    issues.push(message);
+    issueDetails.push({ message, ...options });
+  };
 
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     return {
       issues: ['The JSON root must be an object with a books array.'],
+      issueDetails: [{ message: 'The JSON root must be an object with a books array.', path: [] }],
       normalizedPayload: null
     };
   }
@@ -93,50 +134,79 @@ export function validateAndNormalizeEditableJsonPayload(payload, expectedPayload
   if (!Array.isArray(payload.books)) {
     return {
       issues: ['The JSON root must contain a books array.'],
+      issueDetails: [{ message: 'The JSON root must contain a books array.', path: ['books'] }],
       normalizedPayload: null
     };
   }
 
   const expectedBooksByIndex = new Map(expectedPayload.books.map((book) => [book.bookIndex, book]));
   const normalizedPayload = { books: [] };
+  const seenBookIndexes = new Map();
 
   payload.books.forEach((inputBook, bookPosition) => {
     if (!inputBook || typeof inputBook !== 'object' || Array.isArray(inputBook)) {
-      issues.push(`Book ${bookPosition + 1} must be an object.`);
+      pushIssue(`Book ${bookPosition + 1} must be an object.`, { path: ['books', bookPosition] });
       return;
     }
 
+    if (seenBookIndexes.has(inputBook.bookIndex)) {
+      const originalBookPosition = seenBookIndexes.get(inputBook.bookIndex);
+      pushIssue(`Book entry ${bookPosition + 1} duplicates bookIndex ${inputBook.bookIndex} already used by book entry ${originalBookPosition + 1}.`, {
+        path: ['books', bookPosition, 'bookIndex'],
+        duplicateOfPath: ['books', originalBookPosition, 'bookIndex']
+      });
+      return;
+    }
+    seenBookIndexes.set(inputBook.bookIndex, bookPosition);
+
     const expectedBook = expectedBooksByIndex.get(inputBook.bookIndex);
     if (!expectedBook) {
-      issues.push(`Book entry ${bookPosition + 1} references unknown bookIndex ${inputBook.bookIndex}.`);
+      pushIssue(`Book entry ${bookPosition + 1} references unknown bookIndex ${inputBook.bookIndex}.`, { path: ['books', bookPosition, 'bookIndex'] });
       return;
     }
 
     if (!Array.isArray(inputBook.pages)) {
-      issues.push(`Book ${expectedBook.bookIndex + 1} must contain a pages array.`);
+      pushIssue(`Book ${expectedBook.bookIndex + 1} must contain a pages array.`, { path: ['books', bookPosition, 'pages'] });
       return;
     }
 
     const expectedPagesByIndex = new Map(expectedBook.pages.map((page) => [page.pageIndex, page]));
     const normalizedBook = {
       bookIndex: expectedBook.bookIndex,
+      bookName: typeof inputBook.bookName === 'string' ? inputBook.bookName : expectedBook.bookName,
       pages: []
     };
 
+    if ('bookName' in inputBook && typeof inputBook.bookName !== 'string') {
+      pushIssue(`Book ${expectedBook.bookIndex + 1} bookName must be a string.`, { path: ['books', bookPosition, 'bookName'] });
+    }
+
+    const seenPageIndexes = new Map();
+
     inputBook.pages.forEach((inputPage, pagePosition) => {
       if (!inputPage || typeof inputPage !== 'object' || Array.isArray(inputPage)) {
-        issues.push(`Book ${expectedBook.bookIndex + 1}, page entry ${pagePosition + 1} must be an object.`);
+        pushIssue(`Book ${expectedBook.bookIndex + 1}, page entry ${pagePosition + 1} must be an object.`, { path: ['books', bookPosition, 'pages', pagePosition] });
         return;
       }
 
+      if (seenPageIndexes.has(inputPage.pageIndex)) {
+        const originalPagePosition = seenPageIndexes.get(inputPage.pageIndex);
+        pushIssue(`Book ${expectedBook.bookIndex + 1}, page entry ${pagePosition + 1} duplicates pageIndex ${inputPage.pageIndex} already used by page entry ${originalPagePosition + 1}.`, {
+          path: ['books', bookPosition, 'pages', pagePosition, 'pageIndex'],
+          duplicateOfPath: ['books', bookPosition, 'pages', originalPagePosition, 'pageIndex']
+        });
+        return;
+      }
+      seenPageIndexes.set(inputPage.pageIndex, pagePosition);
+
       const expectedPage = expectedPagesByIndex.get(inputPage.pageIndex);
       if (!expectedPage) {
-        issues.push(`Book ${expectedBook.bookIndex + 1} references unknown pageIndex ${inputPage.pageIndex}.`);
+        pushIssue(`Book ${expectedBook.bookIndex + 1} references unknown pageIndex ${inputPage.pageIndex}.`, { path: ['books', bookPosition, 'pages', pagePosition, 'pageIndex'] });
         return;
       }
 
       if (!Array.isArray(inputPage.slots)) {
-        issues.push(`Book ${expectedBook.bookIndex + 1}, page ${expectedPage.pageIndex + 1} must contain a slots array.`);
+        pushIssue(`Book ${expectedBook.bookIndex + 1}, page ${expectedPage.pageIndex + 1} must contain a slots array.`, { path: ['books', bookPosition, 'pages', pagePosition, 'slots'] });
         return;
       }
 
@@ -148,31 +218,37 @@ export function validateAndNormalizeEditableJsonPayload(payload, expectedPayload
 
       inputPage.slots.forEach((inputSlot, slotPosition) => {
         if (!inputSlot || typeof inputSlot !== 'object' || Array.isArray(inputSlot)) {
-          issues.push(`Book ${expectedBook.bookIndex + 1}, page ${expectedPage.pageIndex + 1}, slot entry ${slotPosition + 1} must be an object.`);
+          pushIssue(`Book ${expectedBook.bookIndex + 1}, page ${expectedPage.pageIndex + 1}, slot entry ${slotPosition + 1} must be an object.`, {
+            path: ['books', bookPosition, 'pages', pagePosition, 'slots', slotPosition]
+          });
           return;
         }
 
         const expectedSlot = expectedSlotsById.get(inputSlot.id);
         if (!expectedSlot) {
-          issues.push(`Book ${expectedBook.bookIndex + 1}, page ${expectedPage.pageIndex + 1} references unknown slot id ${inputSlot.id}.`);
+          pushIssue(`Book ${expectedBook.bookIndex + 1}, page ${expectedPage.pageIndex + 1} references unknown slot id ${inputSlot.id}.`, {
+            path: ['books', bookPosition, 'pages', pagePosition, 'slots', slotPosition, 'id']
+          });
           return;
         }
 
-        if (inputSlot.modifier !== expectedSlot.modifier || inputSlot.key !== expectedSlot.key) {
-          issues.push(`Slot ${expectedSlot.id} must keep its modifier and key values.`);
-        }
-
         if (typeof inputSlot.name !== 'string') {
-          issues.push(`Slot ${expectedSlot.id} name must be a string.`);
+          pushIssue(`Slot ${expectedSlot.id} name must be a string.`, {
+            path: ['books', bookPosition, 'pages', pagePosition, 'slots', slotPosition, 'name']
+          });
         }
 
         if (!Array.isArray(inputSlot.lines)) {
-          issues.push(`Slot ${expectedSlot.id} must contain a lines array.`);
+          pushIssue(`Slot ${expectedSlot.id} must contain a lines array.`, {
+            path: ['books', bookPosition, 'pages', pagePosition, 'slots', slotPosition, 'lines']
+          });
           return;
         }
 
         if (inputSlot.lines.length !== MACRO_LINE_COUNT) {
-          issues.push(`Slot ${expectedSlot.id} must contain exactly ${MACRO_LINE_COUNT} lines.`);
+          pushIssue(`Slot ${expectedSlot.id} must contain exactly ${MACRO_LINE_COUNT} lines.`, {
+            path: ['books', bookPosition, 'pages', pagePosition, 'slots', slotPosition, 'lines']
+          });
         }
 
         const normalizedLines = [];
@@ -181,17 +257,23 @@ export function validateAndNormalizeEditableJsonPayload(payload, expectedPayload
           const rawLine = inputSlot.lines?.[lineIndex];
 
           if (typeof rawLine !== 'string') {
-            issues.push(`Slot ${expectedSlot.id} line ${lineIndex + 1} must be a string.`);
+            pushIssue(`Slot ${expectedSlot.id} line ${lineIndex + 1} must be a string.`, {
+              path: ['books', bookPosition, 'pages', pagePosition, 'slots', slotPosition, 'lines', lineIndex]
+            });
             normalizedLines.push('');
             continue;
           }
 
           if (sanitizeMacroLineInput(rawLine) !== rawLine) {
-            issues.push(`Slot ${expectedSlot.id} line ${lineIndex + 1} must not contain embedded newlines.`);
+            pushIssue(`Slot ${expectedSlot.id} line ${lineIndex + 1} must not contain embedded newlines.`, {
+              path: ['books', bookPosition, 'pages', pagePosition, 'slots', slotPosition, 'lines', lineIndex]
+            });
           }
 
           if (getMacroLineByteLength(rawLine) > MACRO_LINE_LIMIT) {
-            issues.push(`Slot ${expectedSlot.id} line ${lineIndex + 1} exceeds ${MACRO_LINE_LIMIT} bytes once auto-translate tokens are encoded.`);
+            pushIssue(`Slot ${expectedSlot.id} line ${lineIndex + 1} exceeds ${MACRO_LINE_LIMIT} bytes once auto-translate tokens are encoded.`, {
+              path: ['books', bookPosition, 'pages', pagePosition, 'slots', slotPosition, 'lines', lineIndex]
+            });
           }
 
           normalizedLines.push(rawLine);
@@ -199,8 +281,6 @@ export function validateAndNormalizeEditableJsonPayload(payload, expectedPayload
 
         normalizedPage.slots.push({
           id: expectedSlot.id,
-          modifier: expectedSlot.modifier,
-          key: expectedSlot.key,
           name: typeof inputSlot.name === 'string' ? inputSlot.name : '',
           lines: normalizedLines
         });
@@ -212,16 +292,15 @@ export function validateAndNormalizeEditableJsonPayload(payload, expectedPayload
       }
     });
 
-    if (normalizedBook.pages.length > 0) {
-      normalizedBook.pages.sort((left, right) => left.pageIndex - right.pageIndex);
-      normalizedPayload.books.push(normalizedBook);
-    }
+    normalizedBook.pages.sort((left, right) => left.pageIndex - right.pageIndex);
+    normalizedPayload.books.push(normalizedBook);
   });
 
   normalizedPayload.books.sort((left, right) => left.bookIndex - right.bookIndex);
 
   return {
     issues,
+    issueDetails,
     normalizedPayload: issues.length > 0 ? null : normalizedPayload
   };
 }
@@ -230,6 +309,32 @@ export function applyEditableJsonPayload(payload, { bundle = null, books = [] } 
   const parsedBooks = bundle?.parsedBooks ?? [];
 
   if (parsedBooks.length > 0) {
+    const titleBanks = bundle?.titleBanks ?? [];
+    const defaultTitles = getBundleDefaultTitles(bundle);
+
+    parsedBooks.forEach((book) => {
+      book.title = defaultTitles.get(book.bookIndex) ?? getDefaultBookName(book.bookIndex);
+    });
+
+    if (Array.isArray(bundle?.titles)) {
+      bundle.titles = bundle.titles.map((_, bookIndex) => defaultTitles.get(bookIndex) ?? getDefaultBookName(bookIndex));
+    }
+
+    titleBanks.forEach((titleBank) => {
+      const originalTitles = titleBank.originalBytes
+        ? parseTitleFile(titleBank.fileName, titleBank.originalBytes).titles
+        : (titleBank.titles ?? []);
+      titleBank.titles = originalTitles.map((title, titleIndex) => {
+        const bookIndex = (titleBank.bankIndex * originalTitles.length) + titleIndex;
+        return defaultTitles.get(bookIndex) ?? title ?? getDefaultBookName(bookIndex);
+      });
+    });
+
+    (bundle?.parsedMacroFiles ?? []).forEach((file) => {
+      const defaultTitle = defaultTitles.get(file.bookIndex) ?? getDefaultBookName(file.bookIndex);
+      file.candidateTitle = defaultTitle === getDefaultBookName(file.bookIndex) ? '' : defaultTitle;
+    });
+
     parsedBooks.forEach((book) => {
       book.pages.forEach((page) => {
         getPageSlots(page).forEach((slot) => {
@@ -244,6 +349,30 @@ export function applyEditableJsonPayload(payload, { bundle = null, books = [] } 
       const targetBook = parsedBooksByIndex.get(bookData.bookIndex);
       if (!targetBook) {
         return;
+      }
+
+      if (typeof bookData.bookName === 'string') {
+        targetBook.title = bookData.bookName;
+
+        if (Array.isArray(bundle?.titles)) {
+          bundle.titles[bookData.bookIndex] = bookData.bookName;
+        }
+
+        let titleOffset = 0;
+        for (const titleBank of titleBanks) {
+          const titleCount = titleBank.titles?.length ?? 0;
+          if (bookData.bookIndex < titleOffset + titleCount) {
+            titleBank.titles[bookData.bookIndex - titleOffset] = bookData.bookName;
+            break;
+          }
+          titleOffset += titleCount;
+        }
+
+        (bundle?.parsedMacroFiles ?? []).forEach((file) => {
+          if (file.bookIndex === bookData.bookIndex) {
+            file.candidateTitle = bookData.bookName;
+          }
+        });
       }
 
       const targetPagesByIndex = new Map(targetBook.pages.map((page) => [page.pageIndex, page]));
@@ -270,6 +399,8 @@ export function applyEditableJsonPayload(payload, { bundle = null, books = [] } 
   }
 
   books.forEach((book) => {
+    const bookIndex = book.index ?? book.bookIndex ?? 0;
+    book.label = getDefaultBookName(bookIndex);
     book.pages.forEach((page) => {
       page.slots.forEach((slot) => {
         slot.name = '';
@@ -283,6 +414,10 @@ export function applyEditableJsonPayload(payload, { bundle = null, books = [] } 
     const targetBook = booksByIndex.get(bookData.bookIndex);
     if (!targetBook) {
       return;
+    }
+
+    if (typeof bookData.bookName === 'string') {
+      targetBook.label = bookData.bookName;
     }
 
     const pagesByIndex = new Map(targetBook.pages.map((page) => [page.index ?? page.pageIndex, page]));

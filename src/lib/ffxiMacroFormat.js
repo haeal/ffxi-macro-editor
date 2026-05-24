@@ -270,7 +270,7 @@ function isMacroBackupCategory(category) {
   return category === 'macro-dat' || category === 'macro-meta';
 }
 
-function buildBundleSearchText(bundle) {
+export function buildBundleSearchText(bundle) {
   const parts = [bundle.label];
 
   for (const title of bundle.titles ?? []) {
@@ -742,6 +742,27 @@ export function serializeMacroFile(parsedMacroFile) {
   return bytes;
 }
 
+export function serializeTitleFile(parsedTitleBank) {
+  if (!parsedTitleBank) {
+    throw new Error('A parsed title bank is required for serialization.');
+  }
+
+  const bytes = parsedTitleBank.recoveredBytes
+    ? cloneBytes(parsedTitleBank.recoveredBytes)
+    : new Uint8Array(TITLE_FILE_LENGTH);
+
+  if (bytes.byteLength !== TITLE_FILE_LENGTH) {
+    throw new Error(`Unexpected recovered title bank size: ${bytes.byteLength}`);
+  }
+
+  parsedTitleBank.titles.forEach((title, titleIndex) => {
+    const titleOffset = FILE_HEADER_LENGTH + (titleIndex * TITLE_BYTES);
+    writeFixedCString(bytes, titleOffset, TITLE_BYTES, title);
+  });
+
+  return bytes;
+}
+
 export function exportBundleFiles(bundle) {
   if (!bundle) {
     throw new Error('A parsed bundle is required for export.');
@@ -756,8 +777,8 @@ export function exportBundleFiles(bundle) {
     const parsedTitleBank = parsedTitleMap.get(file.fileName) ?? file.parsedTitleBank ?? null;
     const bytes = file.category === 'macro-dat' && parsedMacroFile
       ? serializeMacroFile(parsedMacroFile)
-      : (file.category === 'macro-meta' && parsedTitleBank?.recoveredBytes
-        ? cloneBytes(parsedTitleBank.recoveredBytes)
+      : (file.category === 'macro-meta' && parsedTitleBank
+        ? serializeTitleFile(parsedTitleBank)
         : cloneBytes(file.originalBytes ?? new Uint8Array()));
     const originalBytes = cloneBytes(file.originalBytes ?? new Uint8Array());
 

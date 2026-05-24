@@ -224,6 +224,16 @@ textarea {
   margin-top: 12px;
 }
 
+.book-entry {
+  display: grid;
+  gap: 6px;
+}
+
+.book-entry.active .book-button-meta {
+  color: #071116;
+  opacity: 0.86;
+}
+
 .sidebar-search {
   display: grid;
   gap: 4px;
@@ -254,6 +264,28 @@ textarea {
   color: var(--ink);
   cursor: pointer;
   text-align: left;
+}
+
+.book-name-input {
+  width: 100%;
+  min-height: 34px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--field);
+  color: var(--ink);
+  font: inherit;
+}
+
+.book-name-input.active {
+  color: #071116;
+  background: linear-gradient(135deg, #7bd5e0, #46a9b6);
+  border-color: transparent;
+}
+
+.book-name-input:focus {
+  outline: 2px solid rgba(123, 213, 224, 0.45);
+  outline-offset: 1px;
 }
 
 .page-shell.has-data .book-button {
@@ -491,6 +523,24 @@ textarea {
 .json-validation ul {
   margin: 0;
   padding-left: 18px;
+}
+
+.json-validation li + li {
+  margin-top: 8px;
+}
+
+.json-validation-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #9fe6ff;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.json-validation-note {
+  color: #ffc5cf;
 }
 
 .json-editor-shell {

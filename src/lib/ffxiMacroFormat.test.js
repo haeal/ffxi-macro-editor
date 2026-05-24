@@ -346,6 +346,29 @@ test('exportBundleFiles rescues malformed ttl files into fixed-size metadata exp
   assert.equal(exportedTitleFile?.bytes[0], 'W'.charCodeAt(0));
 });
 
+test('exportBundleFiles serializes edited title metadata bytes', async () => {
+  const bytes = new Uint8Array(344);
+  const encoder = new TextEncoder();
+  bytes.set(encoder.encode('WHM'), 24);
+
+  const result = await inspectMacroFiles([
+    {
+      name: 'mcr.ttl',
+      webkitRelativePath: 'USER/demo/mcr.ttl',
+      arrayBuffer: async () => bytes.buffer.slice(0)
+    }
+  ]);
+
+  result.bundles[0].titleBanks[0].titles[0] = 'WAR';
+
+  const exportResult = exportBundleFiles(result.bundles[0]);
+  const exportedTitleFile = exportResult.files.find((file) => file.fileName === 'mcr.ttl');
+  const reparsedTitleFile = parseTitleFile('mcr.ttl', exportedTitleFile.bytes.buffer);
+
+  assert.equal(exportedTitleFile?.exactMatch, false);
+  assert.equal(reparsedTitleFile.titles[0], 'WAR');
+});
+
 test('exportMacroSetFiles preserves the full imported tree for folder-style uploads', async () => {
   const result = await inspectMacroFiles([
     {
